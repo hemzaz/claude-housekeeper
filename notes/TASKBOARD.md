@@ -527,6 +527,50 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done · `[!]` blocked
     fine; pick the less invasive edit.
   - Verify: `notes/MODULE-BOUNDARIES.md` and the spec agree.
 
+- [ ] **T-X13** Reconcile `--home` flag interpretation (CLI vs fixture-tests)
+  - Surfaced by PR #10 (Tech writer). Running
+    `node scripts/claude-housekeeper.mjs diagnose --home=fixtures/synthetic-homes/clean-home/home/`
+    produces zero findings because the audit reads `<home>/settings.json`,
+    but the fixture stores it at `home/.claude/settings.json`. Pointing
+    at `--home=...home/.claude/` produces TWO findings. The fixture
+    runner (T-310) already passes the `.claude/` parent directly; the
+    CLI does not.
+  - Decision: pick a canonical interpretation. Either (a) CLI flag is
+    the user's $HOME (resolves to `<flag>/.claude` internally), or (b)
+    CLI flag is the `.claude` directory itself. (a) matches typical
+    `--home` usage in other tools; (b) matches what the fixture runner
+    does today.
+  - Recommendation: option (a). Adjust the fixture runner to pass the
+    fixture's `home/` directory to the CLI semantics layer rather than
+    `home/.claude/`. Document the `--home=$HOME` contract in `README.md`
+    and `commands/housekeep.md`.
+  - Verify: README example block re-runs against the same path and
+    produces an `inform` finding consistent with golden #1.
+
+- [ ] **T-X14** Reconcile fixture-card mode with CLI default
+  - Surfaced by PR #10 (Tech writer). Goldens declare `mode: safe` per
+    T-X12 contract; CLI default is `diagnose`. The `clean-home` fixture
+    is captured under safe mode but the CLI's default invocation
+    produces a `diagnose`-mode report. Per T-X12, every card must
+    declare its capture mode in `mode_expectations`; the runner picks
+    that mode when invoking `assembleReport`. Confirm every card
+    correctly declares the mode that matches its `report.json`/`.txt`
+    capture.
+  - Decision: the runner already honors per-fixture mode (per T-310).
+    The drift is in any fixture whose `card.yaml` mode doesn't match
+    its `report.json`'s `mode` field. Audit all 16 fixtures; fix any
+    mismatch by updating `card.yaml`.
+  - Verify: `test/fixtures.test.mjs` asserts
+    `card.mode_expectations.<mode> === report.mode` for every fixture.
+
+- [ ] **T-X15** README roadmap update
+  - Surfaced by PR #10 (Tech writer). README "Roadmap" still lists
+    "Safe out-of-band first wedge" as future even though Phase 0–4 have
+    shipped. Trivial copy edit; do at v0.1.0 tag time alongside T-506
+    or earlier as polish.
+  - Verify: README roadmap section reflects the true v0.1 / v0.2 split
+    per `docs/product-understanding.md` §18 "Roadmap Shape".
+
 - [ ] **T-X12** Pin JSON `mode` default contract
   - Surfaced by Architect (Q3) and earlier traceability C3. Goldens in
     `docs/golden-reports.md` show `mode: safe` because they describe
