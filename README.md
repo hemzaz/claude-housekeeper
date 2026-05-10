@@ -1,20 +1,22 @@
 # Claude Housekeeper
 
-Claude Housekeeper is a Claude Code home inspector: a plugin and local CLI for
-finding the drift that makes Claude sessions noisy, brittle, or slow.
+Read-only Claude Code home inspection for broken hooks, plugin cache drift,
+and protected local state.
 
-It audits the parts of a Claude setup that tend to rot over time: plugin caches, local command and skill registries, mode state files, settings hooks, and log/cache bloat.
+Claude Housekeeper is a Claude Code home inspector: a plugin and local CLI
+that reports drift in the parts of a Claude setup that tend to accumulate
+over time. The first wedge focuses on settings hooks, plugin cache
+versions, the local command and skill registry, and Housekeeper's own
+operation manifests.
 
-The product promise is simple: run one read-only command, get a report, and know
-what is happening, what needs review, what needs a probe, what is protected, and
-what is blocked before Claude starts failing mid-session.
+The product promise is simple: run one read-only command, get a report
+with stance, evidence, missing keys, and boundaries, and understand what
+is happening before Claude starts failing mid-session.
 
-The current implementation is intentionally conservative:
-
-- `diagnose` is read-only and prints a stance-first report.
-- `plan` is read-only and prints concrete findings grouped by check.
-- `verify` runs the smoketest probes that can be driven from the local `claude` binary.
-- `clean`, `harden`, and `rollback` are exposed but currently refuse to mutate anything until snapshot/rollback mechanics are implemented.
+No files changed. `diagnose`, `plan`, and `verify` are read-only.
+`clean`, `harden`, and `rollback` are visible so the command surface is
+stable, but they refuse mutation in v0.1 until snapshot and rollback
+mechanics are implemented.
 
 ## Command Surface
 
@@ -59,6 +61,67 @@ As a Claude plugin command after installation:
 ```
 
 The design target is a single `claude housekeep` entrypoint if Claude Code exposes native CLI extension hooks. Until then, the plugin slash command and `claude-housekeeper` package bin are the supported surfaces.
+
+## Recovery: when Claude itself is broken
+
+The plugin surface is convenience. The standalone CLI is recovery. If
+Claude Code plugin loading is broken, run Housekeeper without depending
+on it:
+
+```bash
+# Local checkout
+node ./scripts/claude-housekeeper.mjs diagnose --safe
+
+# Or via the package runner (after publish)
+npx claude-housekeeper diagnose --safe
+```
+
+`--safe` adds a stricter posture on top of read-only diagnose: it
+parses configuration only, refuses to start MCP servers, refuses to
+run hooks, and skips traversal under sector-boundary paths beyond
+metadata.
+
+## Example output
+
+Running `diagnose` against the bundled `clean-home` fixture produces:
+
+```text
+$ node scripts/claude-housekeeper.mjs diagnose --home=fixtures/synthetic-homes/clean-home/home/
+HOUSEKEEPER REPORT
+No files changed.
+
+PRIMARY
+  stance: inform
+  finding: no findings
+  evidence: none
+  missing key: none
+  next step: none
+
+STANCE SUMMARY
+  inform   0
+  watch    0
+  review   0
+  probe    0
+  protect  0
+  prepare  0
+  repair   0
+  block    0
+
+BOUNDARIES
+  protected: 0
+  sector-boundary: 0
+  secret-adjacent skipped: 0
+
+SCAN
+  mode: diagnose
+  degraded: no
+  skipped: none
+```
+
+See [docs/compatibility-matrix.md](docs/compatibility-matrix.md) for
+the tested platform matrix and
+[docs/schema-stability.md](docs/schema-stability.md) for the stable
+JSON fields the `--json` output guarantees.
 
 ## Safety Model
 
@@ -127,20 +190,28 @@ Pattern support is deliberately small: exact paths, directories, `dir/*`, and `d
 
 ## Current Checks
 
-- Plugin cache versions not referenced by `installed_plugins.json`
-- Duplicate plugin registrations across scopes
-- Plugin cache size accounting
-- Hook commands that point at deleted plugin cache paths
-- Local skill and command shadows against plugin-provided resources
-- Byte-identical versus diverged local command copies
-- Missing or incomplete YAML frontmatter
-- Tiny registry files
-- Zombie `*-state.json` mode files
-- Expired cancel-signal files
-- Large replay logs and top-level logs
-- Old `file-history`, `paste-cache`, `shell-snapshots`, `session-data`, and `sessions` entries
-- Corrupt backup files under 32 bytes
-- Manual drift directories such as `_archive`, `_old`, `_tmp`, and `_diverged`
+The v0.1 first wedge covers settings parse, hook path analysis, plugin
+registry parse, plugin cache version map, the local command/skill
+registry, and Housekeeper's own operation manifest. Detector ids:
+
+- `settings.invalid_json`
+- `settings.hook_path_dangling`
+- `settings.hook_command_shell_ambiguous`
+- `settings.mcp_command_missing`
+- `plugin.expected_orphan`
+- `plugin.cache_unreferenced`
+- `plugin.duplicate_registration`
+- `plugin.cache_size`
+- `registry.local_command_shadow`
+- `registry.local_skill_shadow`
+- `registry.local_command_identical`
+- `registry.local_command_diverged`
+- `registry.broken_frontmatter`
+- `housekeeper.interrupted_operation`
+
+Hygiene and state findings (large logs, zombie state, corrupt backups,
+drift directories, file-history age) are deferred to v0.2 alongside the
+knowledge layer.
 
 ## Roadmap
 

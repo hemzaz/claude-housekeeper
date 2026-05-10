@@ -1,6 +1,6 @@
 ---
 description: Inspect Claude Code home state with read-only Housekeeper diagnostics
-argument-hint: '[diagnose|plan|clean|verify|harden|rollback] [--json] [--scope=plugins|registry|state|settings|fs|all] [--config=/path/to/config.json] [--confirm]'
+argument-hint: '[diagnose|plan|verify] [--safe] [--json] [--scope=plugins|registry|state|settings|fs|all] [--config=/path/to/config.json]'
 disable-model-invocation: true
 allowed-tools: Bash(node:*), Bash(claude:*)
 ---
@@ -13,9 +13,10 @@ Raw slash-command arguments:
 Default behavior:
 - No arguments means `diagnose`.
 - `diagnose` and `plan` are read-only.
-- The current first wedge is safe diagnosis of broken hooks and plugin cache drift.
+- `--safe` adds a stricter posture: parses configuration only, refuses to start MCP servers, refuses to run hooks.
+- The current first wedge is read-only diagnosis of broken hooks and plugin cache drift.
 - Treat output as a report, not permission to mutate.
-- `clean`, `harden`, and `rollback` must not be treated as complete unless the script reports success.
+- `clean`, `harden`, and `rollback` exist on the command surface but refuse mutation in v0.1 (per `docs/build-readiness.md` §4); they are not listed in the suggested first-line argument set.
 
 Run:
 
