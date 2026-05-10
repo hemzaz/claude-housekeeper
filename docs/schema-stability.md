@@ -62,3 +62,15 @@ Null or missing is valid when:
 
 Do not encode missing evidence as false evidence.
 
+## Required `mode` field
+
+`mode` is REQUIRED on every JSON report. It records the active runtime mode
+at scan time: `safe` (under `--safe`), `diagnose` (default `diagnose`
+invocation), or `live` (live-probe mode, post-v0.1).
+
+Goldens MUST declare which runtime mode they were captured under inside
+their fixture's `card.yaml` `mode_expectations` block.
+
+Byte-compare tests (T-203) MUST use the per-fixture mode rather than assume
+a single default.
+
