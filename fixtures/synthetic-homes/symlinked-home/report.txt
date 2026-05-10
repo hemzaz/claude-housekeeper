@@ -1,0 +1,35 @@
+HOUSEKEEPER REPORT
+No files changed.
+
+PRIMARY
+  stance: review
+  finding: a symlink under ~/.claude resolves outside the observed home root
+  evidence: path is a symlink; observed and resolved paths differ
+  missing key: canonical target identity and traversal consent for resolved target
+  next step: decide whether this is intentional before planning changes
+
+STANCE SUMMARY
+  inform   0
+  watch    0
+  review   1
+  probe    0
+  protect  0
+  prepare  0
+  repair   0
+  block    0
+
+BOUNDARIES
+  protected: 0
+  sector-boundary: 0
+  parent-contains-boundary: 1
+  secret-adjacent skipped: 0
+
+SCAN
+  mode: safe
+  degraded: no
+  skipped: symlink target traversal
+
+BLOCKED ACTIONS
+  traverse resolved target by default
+  mutate through symlink
+  infer scope from link name alone
