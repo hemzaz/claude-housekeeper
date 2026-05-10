@@ -126,6 +126,21 @@ test("plugin orphans split: within grace -> watch, outside grace -> probe", () =
   assert.equal(cacheUnreferenced[0].stance, "probe");
 });
 
+test("array-form installed plugin registry marks matching cache version as live", () => {
+  const home = fixtureHome();
+  const live = path.join(home, "plugins/cache/market/tool/1.0.0");
+  mkdirSync(live, { recursive: true });
+  writeJson(path.join(home, "plugins/installed_plugins.json"), {
+    plugins: [{ marketplace: "market", name: "tool", version: "1.0.0", enabled: true }]
+  });
+  writeJson(path.join(home, "settings.json"), {});
+
+  const report = assembleReport(home);
+  const ids = report.findings.map((f) => f.id);
+  assert.equal(ids.includes("plugin.expected_orphan"), false);
+  assert.equal(ids.includes("plugin.cache_unreferenced"), false);
+});
+
 // ---------- T-208: housekeeper.interrupted_operation ----------
 
 test("interrupted operation manifest yields a single block finding", () => {

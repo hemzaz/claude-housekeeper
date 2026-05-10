@@ -927,7 +927,7 @@ function loadContext(home, options) {
   const installed = readJson(pluginsFile);
   const settings = readJson(settingsFile);
   const config = loadConfig(home, options.configPath);
-  const pluginEntries = flattenPluginEntries(installed.value);
+  const pluginEntries = flattenPluginEntries(installed.value, home);
   const pluginResources = collectPluginResources(pluginEntries);
   const mode = options.mode || "diagnose";
   const scanLimits = options.scanLimits || {
@@ -1024,8 +1024,22 @@ function readJson(file) {
   }
 }
 
-function flattenPluginEntries(installed) {
+function flattenPluginEntries(installed, home) {
   if (!installed || typeof installed !== "object" || !installed.plugins) return [];
+  if (Array.isArray(installed.plugins)) {
+    return installed.plugins.filter((record) => record && typeof record === "object").map((record) => {
+      const marketplace = record.marketplace || "unknown";
+      const name = record.name || "unknown";
+      const version = record.version || "unknown";
+      return {
+        key: `${marketplace}/${name}`,
+        scope: record.scope || "user",
+        ...record,
+        installPath: record.installPath
+          || path.join(home, "plugins", "cache", marketplace, name, version)
+      };
+    });
+  }
   const entries = [];
   for (const [key, records] of Object.entries(installed.plugins)) {
     if (!Array.isArray(records)) continue;

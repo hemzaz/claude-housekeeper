@@ -35,9 +35,9 @@ Scopes:
 ```bash
 claude-housekeeper diagnose --scope=plugins
 claude-housekeeper diagnose --scope=registry
-claude-housekeeper diagnose --scope=state
 claude-housekeeper diagnose --scope=settings
-claude-housekeeper diagnose --scope=fs
+claude-housekeeper diagnose --scope=housekeeper
+claude-housekeeper diagnose --scope=all
 claude-housekeeper plan --config=~/.claude/housekeeper/config.json
 ```
 
@@ -86,7 +86,7 @@ metadata.
 Running `diagnose` against the bundled `clean-home` fixture produces:
 
 ```text
-$ node scripts/claude-housekeeper.mjs diagnose --home=fixtures/synthetic-homes/clean-home/home/
+$ node scripts/claude-housekeeper.mjs diagnose --safe --scope=settings --home=fixtures/synthetic-homes/clean-home/home/
 HOUSEKEEPER REPORT
 No files changed.
 
@@ -113,10 +113,14 @@ BOUNDARIES
   secret-adjacent skipped: 0
 
 SCAN
-  mode: diagnose
+  mode: safe
   degraded: no
-  skipped: none
+  skipped: live Claude probes
 ```
+
+`--home` takes a normal user home directory and resolves its `.claude`
+subdirectory. Passing the `.claude` directory itself is also accepted for
+fixture and test harnesses.
 
 See [docs/compatibility-matrix.md](docs/compatibility-matrix.md) for
 the tested platform matrix and
