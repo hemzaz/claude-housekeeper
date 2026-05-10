@@ -1,0 +1,49 @@
+id: clean-home
+purpose: Healthy home produces a single inform finding and no boundary skips.
+mode_expectations:
+  safe:
+    claim_level: observation
+    stance: inform
+surfaces:
+  - path: ~/.claude/settings.json
+    surfaceClass: authored-config
+    ownerClass: user-owned
+    loadBearingClass: known-load-bearing
+    sensitivityClass: private-path
+    executionClass: inert
+    rollbackClass: snapshot-possible
+    scopeClass: in-scope
+  - path: ~/.claude/plugins/installed_plugins.json
+    surfaceClass: claude-app-data
+    ownerClass: claude-managed
+    loadBearingClass: known-load-bearing
+    sensitivityClass: private-path
+    executionClass: inert
+    rollbackClass: snapshot-possible
+    scopeClass: in-scope
+  - path: ~/.claude/plugins/cache/syn-market/syn-tool/1.0.0
+    surfaceClass: claude-app-data
+    ownerClass: claude-managed
+    loadBearingClass: possibly-load-bearing
+    sensitivityClass: private-path
+    executionClass: inert
+    rollbackClass: snapshot-possible
+    scopeClass: in-scope
+evidence:
+  structural:
+    - settings parses
+    - plugin registry parses
+    - hook direct paths exist
+  missing:
+    - live Claude probes were not run in safe mode
+finding:
+  class: orientation
+  stance: inform
+allowed_next_step: none
+blocked_actions:
+  - claim healthy
+report_expectations:
+  - PRIMARY stance is inform
+  - STANCE SUMMARY shows 1 inform and 0 elsewhere
+  - BOUNDARIES section reports 0 protected, 0 sector-boundary, 0 secret-adjacent skipped
+  - SCAN section reports mode safe and degraded no

@@ -1,0 +1,29 @@
+HOUSEKEEPER REPORT
+No files changed.
+
+PRIMARY
+  stance: inform
+  finding: no first-wedge issues found
+  evidence: settings parsed; plugin registry parsed; hook direct paths exist
+  missing key: live Claude probes were not run in safe mode
+  next step: none
+
+STANCE SUMMARY
+  inform   1
+  watch    0
+  review   0
+  probe    0
+  protect  0
+  prepare  0
+  repair   0
+  block    0
+
+BOUNDARIES
+  protected: 0
+  sector-boundary: 0
+  secret-adjacent skipped: 0
+
+SCAN
+  mode: safe
+  degraded: no
+  skipped: live Claude probes
