@@ -368,3 +368,268 @@ BLOCKED ACTIONS
   hide Housekeeper self-failure
 ```
 
+## 11. Interrupted Housekeeper Operation
+
+```text
+HOUSEKEEPER REPORT
+No files changed.
+
+PRIMARY
+  stance: block
+  finding: Housekeeper operation manifest is incomplete
+  evidence: operation id exists; manifest lacks completed verification record
+  missing key: recovery decision for interrupted operation
+  next step: inspect operation record and choose recover, archive, or discard
+
+STANCE SUMMARY
+  inform   0
+  watch    0
+  review   0
+  probe    0
+  protect  0
+  prepare  0
+  repair   0
+  block    1
+
+BLOCKED ACTIONS
+  start new mutation operation
+  overwrite operation manifest
+  hide Housekeeper self-failure
+```
+
+## 12. Symlinked Home
+
+```text
+HOUSEKEEPER REPORT
+No files changed.
+
+PRIMARY
+  stance: review
+  finding: a symlink under ~/.claude resolves outside the observed home root
+  evidence: path is a symlink; observed and resolved paths differ
+  missing key: canonical target identity and traversal consent for resolved target
+  next step: decide whether this is intentional before planning changes
+
+STANCE SUMMARY
+  inform   0
+  watch    0
+  review   1
+  probe    0
+  protect  0
+  prepare  0
+  repair   0
+  block    0
+
+BOUNDARIES
+  protected: 0
+  sector-boundary: 0
+  parent-contains-boundary: 1
+  secret-adjacent skipped: 0
+
+SCAN
+  mode: safe
+  degraded: no
+  skipped: symlink target traversal
+
+BLOCKED ACTIONS
+  traverse resolved target by default
+  mutate through symlink
+  infer scope from link name alone
+```
+
+## 13. Duplicate Scope Plugin
+
+```text
+HOUSEKEEPER REPORT
+No files changed.
+
+PRIMARY
+  stance: review
+  finding: same plugin appears registered at both user and project scope
+  evidence: user settings parsed; project settings parsed; both list the same plugin name
+  missing key: effective precedence in current session and user intent for the second registration
+  next step: decide whether this is intentional before planning changes
+
+STANCE SUMMARY
+  inform   0
+  watch    0
+  review   1
+  probe    0
+  protect  0
+  prepare  0
+  repair   0
+  block    0
+
+BOUNDARIES
+  protected: 0
+  sector-boundary: 0
+  secret-adjacent skipped: 0
+
+SCAN
+  mode: safe
+  degraded: no
+  skipped: live /status precedence probe
+
+BLOCKED ACTIONS
+  remove one scope
+  infer one registration is orphaned
+  mutate either settings file
+```
+
+## 14. Local Shadow Identical
+
+```text
+HOUSEKEEPER REPORT
+No files changed.
+
+PRIMARY
+  stance: review
+  finding: a local command file appears to shadow a byte-identical plugin-provided command
+  evidence: local command name matches plugin-provided resource; byte-identical content hash
+  missing key: user intent for the local copy and rollback proof required to escalate stance
+  next step: decide whether this is intentional before planning changes
+
+STANCE SUMMARY
+  inform   0
+  watch    0
+  review   1
+  probe    0
+  protect  0
+  prepare  0
+  repair   0
+  block    0
+
+BOUNDARIES
+  protected: 0
+  sector-boundary: 0
+  secret-adjacent skipped: 0
+
+SCAN
+  mode: safe
+  degraded: no
+  skipped: live /skills precedence probe
+
+BLOCKED ACTIONS
+  remove local file
+  escalate to prepare without rollback proof
+  claim the local copy is redundant
+```
+
+## 15. Local Shadow Diverged
+
+```text
+HOUSEKEEPER REPORT
+No files changed.
+
+PRIMARY
+  stance: review
+  finding: a local command file shares a name with a plugin-provided command but content bytes differ
+  evidence: local command name matches plugin-provided resource; content bytes differ from plugin source
+  missing key: user intent for the divergence
+  next step: decide whether this is intentional before planning changes
+
+STANCE SUMMARY
+  inform   0
+  watch    0
+  review   1
+  probe    0
+  protect  0
+  prepare  0
+  repair   0
+  block    0
+
+BOUNDARIES
+  protected: 0
+  sector-boundary: 0
+  secret-adjacent skipped: 0
+
+SCAN
+  mode: safe
+  degraded: no
+  skipped: live /skills precedence probe
+
+BLOCKED ACTIONS
+  overwrite local edits
+  propose syncing the local file to plugin source
+  escalate to prepare or repair
+```
+
+## 16. MCP Command Missing
+
+```text
+HOUSEKEEPER REPORT
+No files changed.
+
+PRIMARY
+  stance: prepare
+  finding: MCP server config references a missing direct executable path
+  evidence: MCP config parsed; server command contains an absolute path that does not exist
+  missing key: live /mcp status and startup consent
+  next step: generate a patch preview only
+
+STANCE SUMMARY
+  inform   0
+  watch    0
+  review   0
+  probe    0
+  protect  0
+  prepare  1
+  repair   0
+  block    0
+
+BOUNDARIES
+  protected: 0
+  sector-boundary: 0
+  secret-adjacent skipped: 0
+
+SCAN
+  mode: safe
+  degraded: no
+  skipped: MCP server startup, Claude /mcp probe
+
+BLOCKED ACTIONS
+  start the MCP server
+  edit .mcp.json without consent
+  claim the server is broken before live status is checked
+```
+
+## 17. Secret Command Fragment
+
+```text
+HOUSEKEEPER REPORT
+No files changed.
+
+PRIMARY
+  stance: protect
+  finding: a hook command string contains a token-like env fragment
+  evidence: command string parsed; token-like pattern matched inside command
+  missing key: none for redaction
+  next step: none
+
+STANCE SUMMARY
+  inform   0
+  watch    0
+  review   0
+  probe    0
+  protect  1
+  prepare  0
+  repair   0
+  block    0
+
+BOUNDARIES
+  protected: 1
+  sector-boundary: 1
+  secret-adjacent skipped: 0
+
+PROTECTED
+  path: ~/.claude/settings.json
+  reason: hook command contains a token-like env fragment
+  command: ANTHROPIC_API_KEY=<redacted> /usr/local/bin/syn-notify
+  action: none
+
+BLOCKED ACTIONS
+  print the command raw
+  omit the command string entirely from the report
+  copy the token fragment into evidence or logs
+```
+
