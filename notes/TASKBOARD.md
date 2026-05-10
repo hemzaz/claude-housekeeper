@@ -477,6 +477,71 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done · `[!]` blocked
     (T-311) is the right choice over word-level. Risk: new spec docs
     could add phrases without anyone updating the test.
 
+- [ ] **T-X08** Resolve `repair` stance v0.1 degradation rule
+  - Surfaced by PR #3 (Architect, Q2). The kernel's Evidence Gate
+    forbids `repair` without reversibility keys, which v0.1 cannot
+    produce (no Housekeeper rollback infrastructure ships in v0.1).
+    `docs/decision-calculus.md` does not state a v0.1-only degradation
+    rule explicitly. Decision: in v0.1, the `repair` stance must NEVER
+    appear in any rendered report or finding. Document this in
+    `docs/decision-calculus.md` (new section) and add an assertion in
+    `test/stance.test.mjs` that mode-`safe` and mode-`diagnose` cannot
+    return `repair`.
+  - Verify: stance test asserts `repair` is unreachable in v0.1 modes.
+
+- [ ] **T-X09** Reconcile `protected-secret-path` fixture vs golden #6
+  - Surfaced by PR #5 (TDD guide, finding #1). Card #5 specifies a
+    fixture mounting `.env` and `~/.claude/credentials/`. Golden report
+    #6 shows `~/.claude/commands/local-build.md` as the protected path
+    — a different example (local command shadow), not secret-adjacent.
+    These describe two distinct fixtures sharing one name.
+  - Decision: the card is canonical (matches fixture-matrix description
+    "secret-adjacent paths"). Update `docs/golden-reports.md` §6 to use
+    the `.env`/credentials example to match card #5 and the actual
+    fixture in `fixtures/synthetic-homes/protected-secret-path/`.
+  - Verify: fixture's `report.txt` becomes byte-identical to the
+    revised golden #6.
+
+- [ ] **T-X10** Update card #7 (invalid-settings) to include secondary block
+  - Surfaced by PR #5 (TDD guide, finding #2). Card #7 lists only
+    stance `prepare`. Golden #7 STANCE SUMMARY shows both `prepare: 1`
+    and `block: 1`. Per `docs/protocol-contracts.md` "Invalid Settings"
+    Edge Case 10: stance is `prepare` for the parse repair AND `block`
+    for dependent inference. Card under-specifies.
+  - Decision: extend card #7 in `docs/acceptance-cards.md` to declare
+    BOTH findings — primary `settings.invalid_json` (stance `prepare`)
+    AND secondary `settings.dependent_inference_blocked` (stance
+    `block`). Update fixture `invalid-settings/report.json` to emit
+    both.
+  - Verify: golden #7 STANCE SUMMARY counts match the card and fixture.
+
+- [ ] **T-X11** Confirm `implementation-blueprint.md` §3 module list
+  - Surfaced by PR #3 (Architect, Q1). The blueprint lists 10 modules
+    but the codebase needs `contracts.mjs` (data factories, not in the
+    list) and `audit.mjs` (orchestrator, not in the list). The
+    Architect treated both as "off-list infrastructure" but the spec
+    should be explicit.
+  - Decision: extend `docs/implementation-blueprint.md` §3 to list 12
+    modules (add `contracts` and `audit`), or annotate the existing 10
+    with a note that infrastructure modules are implied. Either is
+    fine; pick the less invasive edit.
+  - Verify: `notes/MODULE-BOUNDARIES.md` and the spec agree.
+
+- [ ] **T-X12** Pin JSON `mode` default contract
+  - Surfaced by Architect (Q3) and earlier traceability C3. Goldens in
+    `docs/golden-reports.md` show `mode: safe` because they describe
+    safe-mode invocations; T-209 specified default `mode: "diagnose"`
+    for normal runs. These are reconcilable — the goldens declare the
+    fixture's invocation mode; the runtime default is `diagnose` only
+    when no flag is passed.
+  - Decision: write a one-paragraph contract in `docs/schema-stability.md`
+    pinning that JSON `mode` is REQUIRED, takes the active runtime mode
+    (`safe` / `diagnose` / `live`), and goldens MUST declare the mode
+    they were captured under in their fixture's `card.yaml`.
+  - Verify: contract appears in `docs/schema-stability.md`; T-203
+    byte-compares cite the per-fixture mode rather than assume one
+    default.
+
 ---
 
 ## Definition of done for the board
