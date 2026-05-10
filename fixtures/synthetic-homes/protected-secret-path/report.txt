@@ -32,3 +32,8 @@ PROTECTED
   path: ~/.claude/credentials/**
   reason: do-not-touch rule
   action: none
+
+SCAN
+  mode: safe
+  degraded: no
+  skipped: live Claude probes

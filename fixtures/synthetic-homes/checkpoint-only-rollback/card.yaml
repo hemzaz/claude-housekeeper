@@ -1,7 +1,7 @@
 id: checkpoint-only-rollback
 purpose: Claude checkpointing cannot satisfy Housekeeper rollback.
 mode_expectations:
-  plan:
+  safe:
     claim_level: finding
     stance: block
 surfaces:

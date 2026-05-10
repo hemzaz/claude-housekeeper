@@ -7,7 +7,7 @@ labels: false-positive
 
 ## Finding
 
-Paste the scorecard row or plan item.
+Paste the finding or plan item.
 
 ```text
 
@@ -19,11 +19,19 @@ Explain why this file, command, skill, hook, state file, or cache should be kept
 
 ## Environment
 
-- Claude Housekeeper version:
+- Housekeeper version:
 - Claude Code version:
 - Operating system:
 - Command run:
 
-## Sanitized evidence
+## Redacted report JSON
+
+Run with `--json --redact` if possible.
+
+```json
+
+```
+
+## Redacted evidence
 
 Include paths and metadata if safe. Do not paste secrets or private tokens.
