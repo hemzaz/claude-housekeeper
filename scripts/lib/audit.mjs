@@ -1,221 +1,694 @@
+// Phase 2 — stance-first audit pipeline.
+//
+// Detectors return raw `DetectorOutput` objects (no severity/risk/action).
+// `assembleReport()` runs every detector, classifies surfaces, fills evidence,
+// applies policy, and runs the stance engine to produce a `Report`
+// (per docs/schemas.md §1).
+
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
+import {
+  SCHEMA_VERSION,
+  makeEvidenceSet,
+  makeFinding,
+  makeReport,
+  makeSurfaceClassification
+} from "./contracts.mjs";
+import { classifySurface } from "./surface.mjs";
+import { decideStance } from "./stance.mjs";
+import { loadConfig, pathMatchesProtection } from "./policy.mjs";
+
+// PLUGIN_ORPHAN_GRACE_DAYS — sourced from docs/loader-semantics.md §2 + §7
+// ("orphaned previous versions are removed automatically about 7 days later").
+// Single constant per T-X06 recommendation.
+export const PLUGIN_ORPHAN_GRACE_DAYS = 7;
+const PLUGIN_ORPHAN_GRACE_MS = PLUGIN_ORPHAN_GRACE_DAYS * 24 * 60 * 60 * 1000;
 
 const DEFAULT_SCOPE = "all";
-const LARGE_LOG_BYTES = 1024 * 1024;
-const OLD_FILE_HISTORY_DAYS = 30;
-const OLD_CACHE_DAYS = 7;
-const ZOMBIE_STATE_MS = 60 * 60 * 1000;
-const PLAN_LIMIT = 12;
 
-const CHECKS = {
-  core: [
-    "config.invalid_json"
-  ],
-  plugins: [
-    "plugin.stale_versions",
-    "plugin.duplicate_registrations",
-    "plugin.hook_path_dangling",
-    "plugin.cache_size"
-  ],
-  registry: [
-    "registry.local_skill_shadow",
-    "registry.local_command_shadow",
-    "registry.broken_frontmatter",
-    "registry.tiny_registry_files",
-    "registry.local_command_identical",
-    "registry.local_command_diverged"
-  ],
-  state: [
-    "state.zombie_modes",
-    "state.expired_cancel_signals",
-    "state.large_replay_logs"
-  ],
+// v0.1 detector ids per notes/PLAN.md §3 Phase 2 detector remap table.
+// Hygiene/state ids deferred per §6B C5 are intentionally absent here.
+const SCOPE_TO_DETECTORS = {
   settings: [
     "settings.invalid_json",
     "settings.hook_path_dangling",
+    "settings.hook_command_shell_ambiguous",
     "settings.mcp_command_missing"
   ],
-  fs: [
-    "fs.large_logs",
-    "fs.old_file_history",
-    "fs.old_short_lived_cache",
-    "fs.corrupt_backups",
-    "fs.drift_dirs"
-  ]
+  plugins: [
+    "plugin.expected_orphan",
+    "plugin.cache_unreferenced",
+    "plugin.duplicate_registration",
+    "plugin.cache_size",
+    "settings.hook_path_dangling",
+    "settings.hook_command_shell_ambiguous"
+  ],
+  registry: [
+    "registry.local_command_shadow",
+    "registry.local_skill_shadow",
+    "registry.local_command_identical",
+    "registry.local_command_diverged",
+    "registry.broken_frontmatter"
+  ],
+  housekeeper: ["housekeeper.interrupted_operation"]
 };
 
+// ---------- entry points ----------
+
 export function auditClaudeHome(home, options = {}) {
+  return assembleReport(home, options);
+}
+
+export function assembleReport(home, options = {}) {
   const scope = options.scope || DEFAULT_SCOPE;
-  const selected = selectedChecks(scope);
+  const mode = options.mode || "diagnose";
+  const selected = selectedDetectors(scope);
   const context = loadContext(home, options);
-  const checks = [];
+  const policyMatchesFor = (target) => collectPolicyMatches(target, context);
 
-  add(checks, selected, checkConfig(context));
+  const detectorOutputs = [];
+  push(detectorOutputs, selected, detectSettingsInvalidJson(context));
+  pushAll(detectorOutputs, selected, detectHookPathDangling(context));
+  pushAll(detectorOutputs, selected, detectHookCommandShellAmbiguous(context));
+  pushAll(detectorOutputs, selected, detectMcpCommandMissing(context));
 
-  add(checks, selected, checkStalePluginVersions(context));
-  add(checks, selected, checkDuplicateRegistrations(context));
-  add(checks, selected, checkPluginCacheSize(context));
-  add(checks, selected, checkDanglingHookPaths(context, "plugin.hook_path_dangling"));
+  pushAll(detectorOutputs, selected, detectPluginExpectedOrphan(context));
+  pushAll(detectorOutputs, selected, detectPluginCacheUnreferenced(context));
+  pushAll(detectorOutputs, selected, detectPluginDuplicateRegistration(context));
+  push(detectorOutputs, selected, detectPluginCacheSize(context));
 
-  add(checks, selected, checkLocalSkillShadow(context));
-  add(checks, selected, checkLocalCommandShadow(context));
-  add(checks, selected, checkBrokenFrontmatter(context));
-  add(checks, selected, checkTinyRegistryFiles(context));
-  add(checks, selected, checkLocalCommandIdentity(context, true));
-  add(checks, selected, checkLocalCommandIdentity(context, false));
+  pushAll(detectorOutputs, selected, detectLocalCommandShadow(context));
+  pushAll(detectorOutputs, selected, detectLocalSkillShadow(context));
+  pushAll(detectorOutputs, selected, detectLocalCommandIdentical(context));
+  pushAll(detectorOutputs, selected, detectLocalCommandDiverged(context));
+  pushAll(detectorOutputs, selected, detectRegistryBrokenFrontmatter(context));
 
-  add(checks, selected, checkZombieModes(context));
-  add(checks, selected, checkExpiredCancelSignals(context));
-  add(checks, selected, checkLargeReplayLogs(context));
+  push(detectorOutputs, selected, detectInterruptedOperation(context));
 
-  add(checks, selected, checkSettingsJson(context));
-  add(checks, selected, checkDanglingHookPaths(context, "settings.hook_path_dangling"));
-  add(checks, selected, checkMissingMcpCommands(context));
+  const findings = detectorOutputs.map((raw) => buildFinding(raw, { home, mode, policyMatchesFor }));
 
-  add(checks, selected, checkLargeLogs(context));
-  add(checks, selected, checkOldFileHistory(context));
-  add(checks, selected, checkOldShortLivedCache(context));
-  add(checks, selected, checkCorruptBackups(context));
-  add(checks, selected, checkDriftDirs(context));
+  const stanceSummary = countStances(findings);
+  const boundaries = collectBoundaries(findings);
+  const primary = pickPrimary(findings);
 
-  const visibleChecks = applyProtection(checks.filter((check) => selected.has(check.id)), context);
-  return {
-    schemaVersion: "0.1-pre",
-    filesChanged: false,
+  return makeReport({
+    schemaVersion: SCHEMA_VERSION,
+    mode,
     home,
-    scope,
-    configPath: context.config.file,
     generatedAt: new Date().toISOString(),
-    totalIssues: visibleChecks.reduce((sum, check) => sum + check.issues.length, 0),
-    protectedIssues: visibleChecks.reduce((sum, check) => sum + check.issues.filter((issue) => issue.protected).length, 0),
-    checks: visibleChecks
+    primary: primary ? primary.id : null,
+    stanceSummary,
+    findings,
+    boundaries,
+    degraded: []
+  });
+}
+
+// ---------- detector dispatch helpers ----------
+
+function push(out, selected, detectorOutput) {
+  if (!detectorOutput) return;
+  if (!selected.has(detectorOutput.id)) return;
+  out.push(detectorOutput);
+}
+
+function pushAll(out, selected, detectorOutputs) {
+  if (!Array.isArray(detectorOutputs)) return;
+  for (const item of detectorOutputs) push(out, selected, item);
+}
+
+function selectedDetectors(scope) {
+  if (scope === "all") {
+    const all = new Set();
+    for (const ids of Object.values(SCOPE_TO_DETECTORS)) for (const id of ids) all.add(id);
+    return all;
+  }
+  if (!SCOPE_TO_DETECTORS[scope]) throw new Error(`Unknown scope: ${scope}`);
+  // Always include cross-cutting interrupted-op detector regardless of scope.
+  return new Set([...SCOPE_TO_DETECTORS[scope], "housekeeper.interrupted_operation"]);
+}
+
+// ---------- finding assembly (T-202) ----------
+
+function buildFinding(raw, { home, mode, policyMatchesFor }) {
+  const surface = raw.surface
+    || classifySurface(raw.targetPath || "", { ...(raw.surfaceHints || {}), home });
+  const evidence = makeEvidenceSet({ ...(raw.evidence || {}), missing: raw.missingKeys || [] });
+  const matches = raw.targetPath ? policyMatchesFor(raw.targetPath) : [];
+  const stance = decideStance({
+    surface,
+    evidence,
+    missingKeys: raw.missingKeys || [],
+    policy: { matches },
+    findingClass: raw.class || raw.findingClass || null,
+    mode
+  });
+
+  // T-208 force: interrupted-operation finding must always render `block`.
+  let stanceValue = raw.forceStance || stance.stance;
+
+  // v0.1 repair degradation: stance.mjs can only emit `repair` with consent,
+  // which v0.1 never grants. Belt-and-braces downgrade.
+  if (stanceValue === "repair") stanceValue = "prepare";
+
+  const blockedActions = raw.blockedActions || defaultBlockedActions(raw.id, stanceValue);
+  const finding = makeFinding({
+    id: raw.id,
+    class: raw.class || "integrity",
+    claimLevel: raw.claimLevel || (stanceValue === "inform" ? "observation" : "finding"),
+    stance: stanceValue,
+    summary: raw.summary || raw.hint || "",
+    surface,
+    evidence,
+    nextAllowedStep: raw.nextAllowedStep || stance.nextAllowedStep || "none",
+    blockedActions
+  });
+
+  // Annotate with stance metadata for the renderer (and tests).
+  finding.why = stance.why;
+  finding.missingKey = stance.missingKey;
+  finding.notAllowed = stance.notAllowed;
+  finding.userDecisionNeeded = stance.userDecisionNeeded;
+  finding.targetPath = raw.targetPath || "";
+  finding.policyMatches = matches;
+
+  // T-210: attach probe metadata when the next step references a live probe.
+  const probe = pickProbeMetadata(finding);
+  if (probe) finding.proposedProbe = probe;
+
+  return finding;
+}
+
+function defaultBlockedActions(id, stance) {
+  if (stance === "block") return ["mutate-without-consent", "claim-fixed"];
+  if (stance === "protect") return [];
+  if (stance === "prepare") return ["mutate-without-consent", "claim-fixed"];
+  if (stance === "probe") return ["mutate-without-consent", "claim-fixed"];
+  if (id.startsWith("plugin.")) return ["call unused", "delete", "quarantine"];
+  return [];
+}
+
+function countStances(findings) {
+  const counts = {
+    inform: 0, watch: 0, review: 0, probe: 0,
+    protect: 0, prepare: 0, repair: 0, block: 0
+  };
+  for (const f of findings) {
+    if (counts[f.stance] != null) counts[f.stance] += 1;
+  }
+  return counts;
+}
+
+function collectBoundaries(findings) {
+  const boundaries = [];
+  for (const f of findings) {
+    if (f.stance !== "protect") continue;
+    boundaries.push({
+      type: pickBoundaryType(f),
+      path: f.targetPath || "",
+      reason: f.why || "boundary",
+      findingId: f.id
+    });
+  }
+  return boundaries;
+}
+
+function pickBoundaryType(finding) {
+  const sc = finding.surface?.scopeClass;
+  if (sc === "sector-boundary" || sc === "parent-contains-boundary") return "sector-boundary";
+  if (
+    finding.surface?.sensitivityClass === "secret-adjacent"
+    || finding.surface?.sensitivityClass === "secret-content"
+  ) {
+    return "secret-adjacent";
+  }
+  return "protected";
+}
+
+// Primary finding selection per docs/report-grammar.md §2:
+// 1. current breakage (block)
+// 2. executable/lifecycle impact (prepare on integrity)
+// 3. load-bearing confidence (probe)
+// 4. user-facing confusion (review)
+// 5. number of dependent findings
+// 6. lowest safe next step (watch/inform last)
+const PRIMARY_PRIORITY = ["block", "prepare", "probe", "review", "protect", "watch", "inform"];
+function pickPrimary(findings) {
+  if (findings.length === 0) return null;
+  for (const stance of PRIMARY_PRIORITY) {
+    const match = findings.find((f) => f.stance === stance);
+    if (match) return match;
+  }
+  return findings[0];
+}
+
+// ---------- T-210 probe metadata ----------
+
+const PROBE_CATALOG = {
+  "/hooks": {
+    class: "loader",
+    mayExecute: "Claude session load, hook registry load",
+    consent: "medium"
+  },
+  "/doctor": {
+    class: "loader",
+    mayExecute: "Claude session load",
+    consent: "medium"
+  },
+  "/mcp": {
+    class: "loader",
+    mayExecute: "may start or contact MCP depending behavior",
+    consent: "high"
+  },
+  "/skills": {
+    class: "loader",
+    mayExecute: "Claude session load, skill registry load",
+    consent: "medium"
+  },
+  "claude --debug hooks": {
+    class: "behavioral",
+    mayExecute: "may run hooks",
+    consent: "high"
+  },
+  "claude --debug mcp": {
+    class: "behavioral",
+    mayExecute: "may start MCP servers",
+    consent: "high"
+  }
+};
+
+function pickProbeMetadata(finding) {
+  // Shell-ambiguous hook commands recommend `claude --debug hooks` (catalog: behavioral, consent high).
+  if (finding.id === "settings.hook_command_shell_ambiguous") {
+    return { reference: "claude --debug hooks", ...PROBE_CATALOG["claude --debug hooks"] };
+  }
+  if (finding.id === "settings.mcp_command_missing") {
+    return { reference: "/mcp", ...PROBE_CATALOG["/mcp"] };
+  }
+  const stepText = `${finding.nextAllowedStep || ""} ${finding.missingKey || ""} ${finding.why || ""}`;
+  for (const [key, meta] of Object.entries(PROBE_CATALOG)) {
+    if (stepText.includes(key)) return { reference: key, ...meta };
+  }
+  return null;
+}
+
+// ---------- detectors (T-201, T-205, T-205a, T-208) ----------
+// Each detector returns DetectorOutput | null | DetectorOutput[].
+// DetectorOutput = {
+//   id, class, surfaceHints, surface?, evidence, missingKeys,
+//   summary, targetPath, blockedActions?, nextAllowedStep?, claimLevel?, forceStance?
+// }
+
+function detectSettingsInvalidJson(context) {
+  if (context.settings.ok) return null;
+  return {
+    id: "settings.invalid_json",
+    class: "integrity",
+    targetPath: context.settingsFile,
+    surfaceHints: {},
+    evidence: {
+      structural: [`parser error: ${context.settings.error}`]
+    },
+    missingKeys: ["valid settings required before hook or MCP inference"],
+    summary: "settings.json is invalid JSON",
+    nextAllowedStep: "generate patch preview or edit manually",
+    blockedActions: ["dependent hook and MCP inference"]
   };
 }
 
-export function formatScorecard(report) {
-  const rows = report.checks
-    .filter((check) => check.issues.length > 0 || check.alwaysShow)
-    .map((check) => [
-      check.id,
-      String(check.issues.length),
-      scorecardAction(check)
-    ]);
-
-  if (rows.length === 0) return "HOUSEKEEPER REPORT\nNo files changed.\nSCORECARD\nNo issues found.";
-
-  const idWidth = Math.max("check".length, ...rows.map((row) => row[0].length));
-  const issueWidth = Math.max("issues".length, ...rows.map((row) => row[1].length));
-  const lines = [
-    "HOUSEKEEPER REPORT",
-    "No files changed.",
-    `SCORECARD${" ".repeat(Math.max(1, idWidth - 5))}  ${"issues".padStart(issueWidth)}   action`,
-    `${"-".repeat(idWidth)}  ${"-".repeat(issueWidth)}   ${"-".repeat(14)}`
-  ];
-
-  for (const [id, count, action] of rows) {
-    lines.push(`${id.padEnd(idWidth)}  ${count.padStart(issueWidth)}   ${action}`);
-  }
-  lines.push(`${"-".repeat(idWidth)}  ${"-".repeat(issueWidth)}`);
-  lines.push(`${"TOTAL".padEnd(idWidth)}  ${String(report.totalIssues).padStart(issueWidth)}`);
-  if (report.protectedIssues > 0) {
-    lines.push(`${"PROTECTED".padEnd(idWidth)}  ${String(report.protectedIssues).padStart(issueWidth)}`);
-  }
-  return lines.join("\n");
-}
-
-export function formatPlan(report) {
-  const lines = ["HOUSEKEEPER REPORT", "No files changed.", `PLAN for ${report.home}`, ""];
-  let wroteAny = false;
-
-  for (const check of report.checks) {
-    if (check.issues.length === 0) continue;
-    wroteAny = true;
-    lines.push(`${check.id} (${check.issues.length})`);
-    lines.push(`action: ${check.action || "review"}`);
-    for (const issue of check.issues.slice(0, PLAN_LIMIT)) {
-      lines.push(`- ${issue.summary}`);
-      lines.push(`  risk: ${issue.risk}`);
-      if (issue.protected) lines.push(`  protected: ${issue.protectionReason || "do-not-touch rule"}`);
-      if (issue.path) lines.push(`  path: ${issue.path}`);
+function detectHookPathDangling(context) {
+  if (!context.settings.ok || !context.settings.value) return [];
+  const out = [];
+  const seen = new Set();
+  for (const command of collectHookCommands(context.settings.value)) {
+    if (looksShellAmbiguous(command)) continue;
+    for (const candidate of extractAbsolutePaths(command)) {
+      if (!isPluginCacheCommand(candidate)) continue;
+      if (existsSync(candidate)) continue;
+      const dedupe = `${context.settingsFile}|${candidate}`;
+      if (seen.has(dedupe)) continue;
+      seen.add(dedupe);
+      out.push({
+        id: "settings.hook_path_dangling",
+        class: "integrity",
+        targetPath: context.settingsFile,
+        surfaceHints: {},
+        evidence: {
+          structural: [
+            "settings parsed",
+            "hook command contains an absolute path that does not exist"
+          ]
+        },
+        missingKeys: ["live /hooks view", "hook verification"],
+        summary: "settings hook references a missing direct executable path",
+        nextAllowedStep: "generate a patch preview only",
+        blockedActions: ["mutate settings", "delete plugin cache", "claim fixed"]
+      });
     }
-    if (check.issues.length > PLAN_LIMIT) {
-      lines.push(`- ... ${check.issues.length - PLAN_LIMIT} more`);
-    }
-    lines.push("");
   }
-
-  if (!wroteAny) lines.push("No changes needed.");
-  else lines.push("No changes have been made. Destructive actions require snapshot support and --confirm.");
-  return lines.join("\n").trimEnd();
+  return out;
 }
 
-function selectedChecks(scope) {
-  if (scope === "all") return new Set(Object.values(CHECKS).flat());
-  if (!CHECKS[scope]) throw new Error(`Unknown scope: ${scope}`);
-  return new Set([...CHECKS.core, ...CHECKS[scope]]);
+function detectHookCommandShellAmbiguous(context) {
+  if (!context.settings.ok || !context.settings.value) return [];
+  const out = [];
+  const seen = new Set();
+  for (const command of collectHookCommands(context.settings.value)) {
+    if (!looksShellAmbiguous(command)) continue;
+    if (!mentionsPluginCache(command)) continue;
+    if (seen.has(command)) continue;
+    seen.add(command);
+    out.push({
+      id: "settings.hook_command_shell_ambiguous",
+      class: "integrity",
+      targetPath: context.settingsFile,
+      surface: makeSurfaceClassification({
+        surfaceClass: "executable-surface",
+        ownerClass: "user-owned",
+        loadBearingClass: "possibly-load-bearing",
+        sensitivityClass: "private-path",
+        executionClass: "shell-expansion-risk",
+        rollbackClass: "snapshot-possible",
+        scopeClass: "in-scope",
+        confidence: "medium"
+      }),
+      evidence: {
+        structural: ["settings parsed", "command string references plugin cache text"]
+      },
+      missingKeys: ["shell parse certainty", "consented hook debug trace"],
+      summary: "hook command contains a plugin-cache-looking path inside shell syntax",
+      nextAllowedStep: "run a live hook debug probe after consent",
+      blockedActions: ["patch command string", "call hook broken with certainty", "claim fixed"]
+    });
+  }
+  return out;
 }
 
-function add(checks, selected, check) {
-  if (selected.has(check.id)) checks.push(check);
+function detectMcpCommandMissing(context) {
+  if (!context.settings.ok || !context.settings.value?.mcpServers) return [];
+  const out = [];
+  for (const [name, server] of Object.entries(context.settings.value.mcpServers)) {
+    if (!server || typeof server.command !== "string") continue;
+    const command = server.command;
+    if (!command.startsWith("/")) continue;
+    if (existsSync(command)) continue;
+    out.push({
+      id: "settings.mcp_command_missing",
+      class: "integrity",
+      targetPath: context.settingsFile,
+      surfaceHints: {},
+      evidence: {
+        structural: [
+          "settings parsed",
+          `mcpServers.${name}.command does not exist: ${command}`
+        ]
+      },
+      missingKeys: ["MCP server start verification"],
+      summary: `MCP server "${name}" references a missing absolute command path`,
+      nextAllowedStep: "generate a patch preview; do not start the server",
+      blockedActions: ["start MCP server", "claim fixed"]
+    });
+  }
+  return out;
 }
 
-function scorecardAction(check) {
-  if (check.issues.length > 0 && check.issues.every((issue) => issue.protected)) return "protected";
-  return check.action || "";
-}
-
-function applyProtection(checks, context) {
-  if (context.config.error || context.config.rules.length === 0) return checks;
-  return checks.map((check) => ({
-    ...check,
-    issues: check.issues.map((issue) => protectIssue(check, issue, context))
+// T-205a: split plugin.stale_versions into expected_orphan (within grace, watch)
+// vs cache_unreferenced (outside grace, probe).
+function detectPluginExpectedOrphan(context) {
+  return pluginCacheOrphans(context).filter((entry) => entry.withinGrace).map((entry) => ({
+    id: "plugin.expected_orphan",
+    class: "hygiene",
+    targetPath: entry.path,
+    surfaceHints: { isPluginCacheVersionDir: true },
+    evidence: {
+      structural: ["installed registry parsed", "version not referenced by installed registry"],
+      freshness: ["within-grace-period"]
+    },
+    missingKeys: ["live active-session reference check"],
+    summary: "old plugin cache version appears to be an expected orphan",
+    nextAllowedStep: "no action now",
+    blockedActions: ["call unused", "quarantine", "delete"]
   }));
 }
 
-function checkConfig(context) {
-  const issues = context.config.error ? [{
-    summary: `Housekeeper config is invalid JSON: ${context.config.error}`,
-    path: context.config.file
-  }] : [];
-  return check("config.invalid_json", issues, "review");
+function detectPluginCacheUnreferenced(context) {
+  return pluginCacheOrphans(context).filter((entry) => !entry.withinGrace).map((entry) => ({
+    id: "plugin.cache_unreferenced",
+    class: "hygiene",
+    targetPath: entry.path,
+    surfaceHints: { isPluginCacheVersionDir: true },
+    evidence: {
+      structural: [
+        "installed registry parsed",
+        "version directory is outside known references"
+      ]
+    },
+    missingKeys: [
+      "active session, process reference, or retention policy evidence",
+      "behavioral-key"
+    ],
+    summary: "plugin cache version is not referenced by known registry evidence",
+    nextAllowedStep: "run freshness probe or review manually",
+    blockedActions: ["call unused", "delete", "quarantine without Housekeeper rollback proof"]
+  }));
 }
 
-function protectIssue(check, issue, context) {
-  const rule = context.config.rules.find((candidate) => protectionMatches(candidate, check.id, issue.path, context.home));
-  if (!rule) return issue;
+function pluginCacheOrphans(context) {
+  const livePaths = new Set(context.pluginEntries.map((entry) => entry.installPath).filter(Boolean));
+  const cacheRoot = path.join(context.home, "plugins", "cache");
+  const out = [];
+  for (const versionDir of listCacheVersionDirs(cacheRoot)) {
+    if (livePaths.has(versionDir)) continue;
+    const ageMs = context.now - mtimeMs(versionDir);
+    out.push({ path: versionDir, withinGrace: ageMs <= PLUGIN_ORPHAN_GRACE_MS });
+  }
+  return out;
+}
+
+function detectPluginDuplicateRegistration(context) {
+  const out = [];
+  const byKey = new Map();
+  for (const entry of context.pluginEntries) {
+    if (!byKey.has(entry.key)) byKey.set(entry.key, []);
+    byKey.get(entry.key).push(entry);
+  }
+  for (const [key, entries] of byKey.entries()) {
+    const scopes = new Set(entries.map((entry) => `${entry.scope || "unknown"}:${entry.projectPath || ""}`));
+    if (entries.length > 1 || scopes.size > 1) {
+      out.push({
+        id: "plugin.duplicate_registration",
+        class: "divergence",
+        targetPath: path.join(context.home, "plugins", "installed_plugins.json"),
+        surfaceHints: {},
+        evidence: {
+          structural: [
+            `${key} has ${entries.length} registrations across ${scopes.size} scope(s)`
+          ]
+        },
+        missingKeys: ["user-intent"],
+        summary: `${key} is registered in multiple scopes`,
+        nextAllowedStep: "review intent before any change",
+        blockedActions: ["mutate registry without intent confirmation"]
+      });
+    }
+  }
+  return out;
+}
+
+function detectPluginCacheSize(context) {
+  const cacheRoot = path.join(context.home, "plugins", "cache");
+  const sizes = listCacheVersionDirs(cacheRoot).map((versionDir) => ({
+    path: versionDir,
+    sizeBytes: dirSize(versionDir)
+  }));
+  if (sizes.length === 0) return null;
+  const total = sizes.reduce((sum, item) => sum + item.sizeBytes, 0);
   return {
-    ...issue,
-    protected: true,
-    actionable: false,
-    risk: "protected",
-    proposedAction: "do-not-touch",
-    protectionReason: rule.reason
+    id: "plugin.cache_size",
+    class: "orientation",
+    claimLevel: "observation",
+    targetPath: cacheRoot,
+    surfaceHints: { isPluginCacheVersionDir: false },
+    evidence: {
+      structural: [
+        `plugin cache contains ${sizes.length} version directories`,
+        `total size ${formatBytes(total)}`
+      ]
+    },
+    missingKeys: [],
+    summary: `plugin cache uses ${formatBytes(total)} across ${sizes.length} version directories`,
+    nextAllowedStep: "none",
+    blockedActions: []
   };
 }
 
-function protectionMatches(rule, checkId, issuePath, home) {
-  if (rule.check && rule.check !== checkId) return false;
-  if (!rule.path) return true;
-  if (!issuePath) return false;
-  return pathMatchesProtection(rule.path, issuePath, home);
+function detectLocalCommandShadow(context) {
+  const localDir = path.join(context.home, "commands");
+  const out = [];
+  for (const command of collectCommands(localDir)) {
+    if (!context.pluginResources.commands.has(command.name)) continue;
+    out.push({
+      id: "registry.local_command_shadow",
+      class: "shadow",
+      targetPath: command.path,
+      surfaceHints: {},
+      evidence: {
+        structural: [
+          `local command name matches plugin-provided command from ${pluginsFor(context.pluginResources.commands, command.name)}`
+        ]
+      },
+      missingKeys: ["user-intent"],
+      summary: `${command.name} shadows plugin command`,
+      nextAllowedStep: "decide whether the override is intentional",
+      blockedActions: ["overwrite local edits"]
+    });
+  }
+  return out;
 }
 
-function pathMatchesProtection(pattern, issuePath, home) {
-  const absolutePattern = path.isAbsolute(pattern) ? pattern : path.join(home, pattern);
-  const normalizedPattern = path.normalize(absolutePattern);
-  const normalizedPath = path.normalize(issuePath);
-  if (normalizedPattern.endsWith(`${path.sep}**`)) {
-    const prefix = normalizedPattern.slice(0, -3);
-    return normalizedPath === prefix || normalizedPath.startsWith(`${prefix}${path.sep}`);
+function detectLocalSkillShadow(context) {
+  const localDir = path.join(context.home, "skills");
+  const out = [];
+  for (const skill of collectSkills(localDir)) {
+    if (!context.pluginResources.skills.has(skill.name)) continue;
+    out.push({
+      id: "registry.local_skill_shadow",
+      class: "shadow",
+      targetPath: skill.path,
+      surfaceHints: {},
+      evidence: {
+        structural: [
+          `local skill name matches plugin-provided skill from ${pluginsFor(context.pluginResources.skills, skill.name)}`
+        ]
+      },
+      missingKeys: ["user-intent"],
+      summary: `${skill.name} shadows plugin skill`,
+      nextAllowedStep: "decide whether the override is intentional",
+      blockedActions: ["overwrite local edits"]
+    });
   }
-  if (normalizedPattern.endsWith(`${path.sep}*`)) {
-    const prefix = normalizedPattern.slice(0, -2);
-    return path.dirname(normalizedPath) === prefix;
-  }
-  return normalizedPath === normalizedPattern || normalizedPath.startsWith(`${normalizedPattern}${path.sep}`);
+  return out;
 }
+
+function detectLocalCommandIdentical(context) {
+  return localCommandIdentityFindings(context, true);
+}
+
+function detectLocalCommandDiverged(context) {
+  return localCommandIdentityFindings(context, false);
+}
+
+function localCommandIdentityFindings(context, identical) {
+  const localDir = path.join(context.home, "commands");
+  const out = [];
+  for (const command of collectCommands(localDir)) {
+    const pluginCommands = context.pluginResources.commands.get(command.name) || [];
+    if (pluginCommands.length === 0) continue;
+    const localHash = hashFile(command.path);
+    const hasIdentical = pluginCommands.some((pluginCommand) => hashFile(pluginCommand.path) === localHash);
+    if (identical !== hasIdentical) continue;
+    out.push({
+      id: identical ? "registry.local_command_identical" : "registry.local_command_diverged",
+      class: identical ? "shadow" : "divergence",
+      targetPath: command.path,
+      surfaceHints: {},
+      evidence: {
+        structural: [
+          identical
+            ? "local command is byte-identical to plugin version"
+            : "local command has diverged from plugin version"
+        ]
+      },
+      missingKeys: identical ? ["rollback-proof", "user-intent"] : ["user-intent"],
+      summary: identical
+        ? `${command.name} is byte-identical to plugin version`
+        : `${command.name} has diverged from plugin version`,
+      nextAllowedStep: "review-required",
+      blockedActions: ["overwrite local edits"]
+    });
+  }
+  return out;
+}
+
+function detectRegistryBrokenFrontmatter(context) {
+  const files = [
+    ...collectSkills(path.join(context.home, "skills")).map((item) => ({ ...item, type: "skill" })),
+    ...collectCommands(path.join(context.home, "commands")).map((item) => ({ ...item, type: "command" }))
+  ];
+  const out = [];
+  for (const file of files) {
+    const frontmatter = parseFrontmatter(readText(file.path));
+    const broken = !frontmatter || (file.type === "skill" ? !frontmatter.name : !frontmatter.description);
+    if (!broken) continue;
+    out.push({
+      id: "registry.broken_frontmatter",
+      class: "integrity",
+      targetPath: file.path,
+      surfaceHints: {},
+      evidence: {
+        structural: [`${file.name} has missing or incomplete YAML frontmatter`]
+      },
+      missingKeys: ["valid frontmatter for loader"],
+      summary: `${file.name} has missing or incomplete YAML frontmatter`,
+      nextAllowedStep: "generate a patch preview",
+      blockedActions: ["overwrite without backup"]
+    });
+  }
+  return out;
+}
+
+// T-208: housekeeper.interrupted_operation — surface incomplete operation manifests
+// even though v0.1 has no mutation. Required by operational-readiness.md §4 +
+// protocol-contracts.md §17 + golden #10. Stance is forced to `block`.
+function detectInterruptedOperation(context) {
+  const opsDir = path.join(context.home, "housekeeper", "operations");
+  if (!existsSync(opsDir)) return null;
+  const manifests = [];
+  for (const name of readdirSafe(opsDir)) {
+    if (!name.endsWith(".json")) continue;
+    const file = path.join(opsDir, name);
+    const parsed = readJson(file);
+    if (!parsed.ok || !parsed.value) continue;
+    if (parsed.value.status === "verified") continue;
+    manifests.push({ file, status: parsed.value.status || "unknown" });
+  }
+  if (manifests.length === 0) return null;
+  const first = manifests[0];
+  return {
+    id: "housekeeper.interrupted_operation",
+    class: "integrity",
+    targetPath: first.file,
+    surface: makeSurfaceClassification({
+      surfaceClass: "housekeeper-owned",
+      ownerClass: "housekeeper-owned",
+      loadBearingClass: "not-load-bearing",
+      sensitivityClass: "private-path",
+      executionClass: "inert",
+      rollbackClass: "manifest-backed",
+      scopeClass: "in-scope",
+      confidence: "high"
+    }),
+    evidence: {
+      structural: [
+        `operation id ${path.basename(first.file, ".json")} exists`,
+        "manifest lacks completed verification record"
+      ],
+      reversibility: ["manifest-present-but-incomplete"]
+    },
+    missingKeys: ["recovery decision for interrupted operation"],
+    summary: "Housekeeper operation manifest is incomplete",
+    nextAllowedStep: "inspect operation record and choose recover, archive, or discard",
+    blockedActions: [
+      "start new mutation operation",
+      "overwrite operation manifest",
+      "hide Housekeeper self-failure"
+    ],
+    forceStance: "block"
+  };
+}
+
+// ---------- detector primitives ----------
 
 function loadContext(home, options) {
   const pluginsFile = path.join(home, "plugins", "installed_plugins.json");
@@ -237,37 +710,22 @@ function loadContext(home, options) {
   };
 }
 
-function loadConfig(home, explicitPath) {
-  const candidates = [
-    explicitPath,
-    path.join(home, "housekeeper", "config.json"),
-    path.join(home, "housekeeper.json")
-  ].filter(Boolean);
-  for (const file of candidates) {
-    const parsed = readJson(file);
-    if (parsed.ok && !parsed.missing) {
-      return { file, rules: normalizeProtectionRules(parsed.value) };
-    }
-    if (!parsed.ok) {
-      return { file, rules: [], error: parsed.error };
+function collectPolicyMatches(targetPath, context) {
+  if (!context.config.rules || context.config.rules.length === 0) return [];
+  const matches = [];
+  for (const rule of context.config.rules) {
+    if (rule.path && pathMatchesProtection(rule.path, targetPath, context.home)) {
+      matches.push({
+        type: "doNotTouch",
+        pattern: rule.path,
+        path: targetPath,
+        reason: rule.reason || "do-not-touch rule",
+        scope: rule.scope || "user",
+        effect: "stance protect, action none"
+      });
     }
   }
-  return { file: null, rules: [] };
-}
-
-function normalizeProtectionRules(value) {
-  const rules = [
-    ...(Array.isArray(value?.doNotTouch) ? value.doNotTouch : []),
-    ...(Array.isArray(value?.protect) ? value.protect : [])
-  ];
-  return rules
-    .filter((rule) => rule && typeof rule === "object")
-    .map((rule) => ({
-      check: typeof rule.check === "string" ? rule.check : null,
-      path: typeof rule.path === "string" ? rule.path : null,
-      reason: typeof rule.reason === "string" ? rule.reason : "do-not-touch rule"
-    }))
-    .filter((rule) => rule.check || rule.path);
+  return matches;
 }
 
 function readJson(file) {
@@ -284,9 +742,7 @@ function flattenPluginEntries(installed) {
   const entries = [];
   for (const [key, records] of Object.entries(installed.plugins)) {
     if (!Array.isArray(records)) continue;
-    for (const record of records) {
-      entries.push({ key, ...record });
-    }
+    for (const record of records) entries.push({ key, ...record });
   }
   return entries;
 }
@@ -328,21 +784,6 @@ function collectCommands(commandsDir) {
     }));
 }
 
-function checkStalePluginVersions(context) {
-  const livePaths = new Set(context.pluginEntries.map((entry) => entry.installPath).filter(Boolean));
-  const cacheRoot = path.join(context.home, "plugins", "cache");
-  const issues = [];
-  for (const versionDir of listCacheVersionDirs(cacheRoot)) {
-    if (!livePaths.has(versionDir)) {
-      issues.push({
-        summary: `${path.relative(cacheRoot, versionDir)} is not referenced by installed_plugins.json`,
-        path: versionDir
-      });
-    }
-  }
-  return check("plugin.stale_versions", issues, "clean --scope=plugins");
-}
-
 function listCacheVersionDirs(cacheRoot) {
   if (!existsSync(cacheRoot)) return [];
   const dirs = [];
@@ -361,56 +802,11 @@ function listCacheVersionDirs(cacheRoot) {
   return dirs;
 }
 
-function checkDuplicateRegistrations(context) {
-  const issues = [];
-  const byKey = new Map();
-  for (const entry of context.pluginEntries) {
-    if (!byKey.has(entry.key)) byKey.set(entry.key, []);
-    byKey.get(entry.key).push(entry);
-  }
-  for (const [key, entries] of byKey.entries()) {
-    const scopes = new Set(entries.map((entry) => `${entry.scope || "unknown"}:${entry.projectPath || ""}`));
-    if (entries.length > 1 || scopes.size > 1) {
-      issues.push({
-        summary: `${key} has ${entries.length} registrations across ${scopes.size} scope(s)`
-      });
-    }
-  }
-  return check("plugin.duplicate_registrations", issues, "clean --scope=plugins");
-}
-
-function checkPluginCacheSize(context) {
-  const cacheRoot = path.join(context.home, "plugins", "cache");
-  const issues = listCacheVersionDirs(cacheRoot).map((versionDir) => ({
-    summary: `${path.relative(cacheRoot, versionDir)} uses ${formatBytes(dirSize(versionDir))}`,
-    path: versionDir
-  }));
-  return check("plugin.cache_size", issues, "diagnose --scope=plugins", true);
-}
-
-function checkDanglingHookPaths(context, id) {
-  if (!context.settings.ok || !context.settings.value) return check(id, [], "clean --scope=settings");
-  const commands = collectHookCommands(context.settings.value);
-  const issues = [];
-  for (const command of commands) {
-    for (const candidate of extractAbsolutePaths(command)) {
-      if (candidate.includes(`${path.sep}plugins${path.sep}cache${path.sep}`) && !existsSync(candidate)) {
-        issues.push({
-          summary: `hook command references missing plugin path: ${candidate}`,
-          path: context.settingsFile
-        });
-      }
-    }
-  }
-  return check(id, dedupeIssues(issues), id.startsWith("plugin.") ? "clean --scope=plugins" : "clean --scope=settings");
-}
-
 function collectHookCommands(value) {
   const commands = [];
   const visit = (node) => {
-    if (Array.isArray(node)) {
-      for (const child of node) visit(child);
-    } else if (node && typeof node === "object") {
+    if (Array.isArray(node)) for (const child of node) visit(child);
+    else if (node && typeof node === "object") {
       if (typeof node.command === "string") commands.push(node.command);
       for (const child of Object.values(node)) visit(child);
     }
@@ -424,189 +820,18 @@ function extractAbsolutePaths(command) {
   return matches.map((match) => match.replace(/^['"]|['"]$/g, ""));
 }
 
-function checkLocalSkillShadow(context) {
-  const localDir = path.join(context.home, "skills");
-  const issues = collectSkills(localDir)
-    .filter((skill) => context.pluginResources.skills.has(skill.name))
-    .map((skill) => ({
-      summary: `${skill.name} shadows plugin skill from ${pluginsFor(context.pluginResources.skills, skill.name)}`,
-      path: skill.path
-    }));
-  return check("registry.local_skill_shadow", issues, "clean --scope=registry");
+function looksShellAmbiguous(command) {
+  // Heuristic: command substitution or env-var expansion of plugin paths makes
+  // direct-existence reasoning unsafe (per docs/loader-semantics.md §5).
+  return /\$\{?[A-Z_]/.test(command) || /`[^`]+`/.test(command) || /\$\([^)]+\)/.test(command);
 }
 
-function checkLocalCommandShadow(context) {
-  const localDir = path.join(context.home, "commands");
-  const issues = collectCommands(localDir)
-    .filter((command) => context.pluginResources.commands.has(command.name))
-    .map((command) => ({
-      summary: `${command.name} shadows plugin command from ${pluginsFor(context.pluginResources.commands, command.name)}`,
-      path: command.path
-    }));
-  return check("registry.local_command_shadow", issues, "plan --scope=registry");
+function mentionsPluginCache(command) {
+  return command.includes("plugins/cache") || command.includes("CLAUDE_PLUGIN_ROOT");
 }
 
-function checkBrokenFrontmatter(context) {
-  const files = [
-    ...collectSkills(path.join(context.home, "skills")).map((item) => ({ ...item, type: "skill" })),
-    ...collectCommands(path.join(context.home, "commands")).map((item) => ({ ...item, type: "command" }))
-  ];
-  const issues = files.filter((file) => {
-    const frontmatter = parseFrontmatter(readText(file.path));
-    if (!frontmatter) return true;
-    return file.type === "skill" ? !frontmatter.name : !frontmatter.description;
-  }).map((file) => ({
-    summary: `${file.name} has missing or incomplete YAML frontmatter`,
-    path: file.path
-  }));
-  return check("registry.broken_frontmatter", issues, "clean --scope=registry");
-}
-
-function checkTinyRegistryFiles(context) {
-  const files = [
-    ...collectSkills(path.join(context.home, "skills")),
-    ...collectCommands(path.join(context.home, "commands"))
-  ];
-  const issues = files.filter((file) => size(file.path) < 32).map((file) => ({
-    summary: `${file.name} is under 32 bytes`,
-    path: file.path
-  }));
-  return check("registry.tiny_registry_files", issues, "clean --scope=registry");
-}
-
-function checkLocalCommandIdentity(context, identical) {
-  const localDir = path.join(context.home, "commands");
-  const issues = [];
-  for (const command of collectCommands(localDir)) {
-    const pluginCommands = context.pluginResources.commands.get(command.name) || [];
-    if (pluginCommands.length === 0) continue;
-    const localHash = hashFile(command.path);
-    const hasIdentical = pluginCommands.some((pluginCommand) => hashFile(pluginCommand.path) === localHash);
-    if (identical === hasIdentical) {
-      issues.push({
-        summary: `${command.name} is ${identical ? "byte-identical to" : "diverged from"} plugin version`,
-        path: command.path
-      });
-    }
-  }
-  return check(
-    identical ? "registry.local_command_identical" : "registry.local_command_diverged",
-    issues,
-    identical ? "clean --scope=registry" : "plan --scope=registry"
-  );
-}
-
-function checkZombieModes(context) {
-  const roots = [context.home, path.join(path.dirname(context.home), ".omc")];
-  const issues = [];
-  for (const root of roots) {
-    for (const file of walk(root).filter((item) => item.endsWith("-state.json"))) {
-      const parsed = readJson(file);
-      if (!parsed.ok || !parsed.value || parsed.value.active !== true) continue;
-      const checkedAt = Date.parse(parsed.value.last_checked_at || parsed.value.lastCheckedAt || "");
-      if (Number.isNaN(checkedAt) || context.now - checkedAt <= ZOMBIE_STATE_MS) continue;
-      issues.push({
-        summary: `${path.basename(file)} is active but stale`,
-        path: file
-      });
-    }
-  }
-  return check("state.zombie_modes", issues, "clean --scope=state");
-}
-
-function checkExpiredCancelSignals(context) {
-  const issues = [];
-  for (const file of walk(context.home).filter((item) => /cancel.*\.json$/i.test(path.basename(item)))) {
-    const parsed = readJson(file);
-    if (!parsed.ok || !parsed.value || !parsed.value.expires_at) continue;
-    const expiresAt = Date.parse(parsed.value.expires_at);
-    if (!Number.isNaN(expiresAt) && expiresAt < context.now) {
-      issues.push({ summary: `${path.basename(file)} expired`, path: file });
-    }
-  }
-  return check("state.expired_cancel_signals", issues, "clean --scope=state");
-}
-
-function checkLargeReplayLogs(context) {
-  const issues = walk(context.home)
-    .filter((file) => /agent-replay-.*\.jsonl$/.test(path.basename(file)) && size(file) > LARGE_LOG_BYTES)
-    .map((file) => ({ summary: `${path.basename(file)} uses ${formatBytes(size(file))}`, path: file }));
-  return check("state.large_replay_logs", issues, "clean --scope=state");
-}
-
-function checkSettingsJson(context) {
-  const issues = context.settings.ok ? [] : [{
-    summary: `settings.json is invalid JSON: ${context.settings.error}`,
-    path: context.settingsFile
-  }];
-  return check("settings.invalid_json", issues, "review");
-}
-
-function checkMissingMcpCommands(context) {
-  if (!context.settings.ok || !context.settings.value?.mcpServers) {
-    return check("settings.mcp_command_missing", [], "clean --scope=settings");
-  }
-  const issues = [];
-  for (const [name, server] of Object.entries(context.settings.value.mcpServers)) {
-    if (!server || typeof server.command !== "string") continue;
-    if (server.command.startsWith("/") && !existsSync(server.command)) {
-      issues.push({
-        summary: `mcpServers.${name}.command does not exist: ${server.command}`,
-        path: context.settingsFile
-      });
-    }
-  }
-  return check("settings.mcp_command_missing", issues, "clean --scope=settings");
-}
-
-function checkLargeLogs(context) {
-  const issues = readdirSafe(context.home)
-    .filter((name) => name.endsWith(".log"))
-    .map((name) => path.join(context.home, name))
-    .filter((file) => size(file) > LARGE_LOG_BYTES)
-    .map((file) => ({ summary: `${path.basename(file)} uses ${formatBytes(size(file))}`, path: file }));
-  return check("fs.large_logs", issues, "clean --scope=fs");
-}
-
-function checkOldFileHistory(context) {
-  const root = path.join(context.home, "file-history");
-  const cutoff = context.now - days(OLD_FILE_HISTORY_DAYS);
-  const issues = readdirSafe(root)
-    .map((name) => path.join(root, name))
-    .filter((item) => isDirectory(item) && mtimeMs(item) < cutoff)
-    .map((item) => ({ summary: `${path.basename(item)} is older than ${OLD_FILE_HISTORY_DAYS} days`, path: item }));
-  return check("fs.old_file_history", issues, "clean --scope=fs");
-}
-
-function checkOldShortLivedCache(context) {
-  const roots = ["paste-cache", "shell-snapshots", "session-data", "sessions"].map((name) => path.join(context.home, name));
-  const cutoff = context.now - days(OLD_CACHE_DAYS);
-  const issues = [];
-  for (const root of roots) {
-    for (const item of readdirSafe(root).map((name) => path.join(root, name))) {
-      if (mtimeMs(item) < cutoff) {
-        issues.push({ summary: `${path.relative(context.home, item)} is older than ${OLD_CACHE_DAYS} days`, path: item });
-      }
-    }
-  }
-  return check("fs.old_short_lived_cache", issues, "clean --scope=fs");
-}
-
-function checkCorruptBackups(context) {
-  const issues = readdirSafe(context.home)
-    .filter((name) => name.includes(".backup."))
-    .map((name) => path.join(context.home, name))
-    .filter((file) => size(file) < 32)
-    .map((file) => ({ summary: `${path.basename(file)} is under 32 bytes`, path: file }));
-  return check("fs.corrupt_backups", issues, "clean --scope=fs");
-}
-
-function checkDriftDirs(context) {
-  const driftNames = new Set(["_archive", "_old", "_tmp", "_diverged"]);
-  const issues = walkDirs(context.home)
-    .filter((dir) => driftNames.has(path.basename(dir)))
-    .map((dir) => ({ summary: `${path.relative(context.home, dir)} looks like manual drift`, path: dir }));
-  return check("fs.drift_dirs", issues, "plan --scope=fs");
+function isPluginCacheCommand(candidate) {
+  return candidate.includes(`${path.sep}plugins${path.sep}cache${path.sep}`);
 }
 
 function pluginsFor(map, name) {
@@ -625,73 +850,9 @@ function parseFrontmatter(text) {
   return data;
 }
 
-function check(id, issues, action, alwaysShow = false) {
-  const metadata = issueMetadata(id);
-  return {
-    id,
-    severity: metadata.severity,
-    risk: metadata.risk,
-    confidence: metadata.confidence,
-    actionable: metadata.actionable,
-    issues: issues.map((issue) => ({ ...metadata, ...issue })),
-    action,
-    alwaysShow
-  };
-}
-
-function issueMetadata(id) {
-  if (id === "plugin.cache_size") {
-    return {
-      severity: "info",
-      risk: "none",
-      confidence: "high",
-      actionable: false,
-      proposedAction: "review"
-    };
-  }
-  if (id.endsWith("_diverged") || id.endsWith("_shadow") || id === "fs.drift_dirs") {
-    return {
-      severity: "warning",
-      risk: "review-required",
-      confidence: "medium",
-      actionable: true,
-      proposedAction: "review"
-    };
-  }
-  if (id.includes("dangling") || id.includes("invalid_json")) {
-    return {
-      severity: "error",
-      risk: "none",
-      confidence: "high",
-      actionable: true,
-      proposedAction: "none"
-    };
-  }
-  return {
-    severity: "warning",
-    risk: "reversible-cleanup",
-    confidence: "medium",
-    actionable: true,
-    proposedAction: "none"
-  };
-}
-
-function dedupeIssues(issues) {
-  const seen = new Set();
-  return issues.filter((issue) => {
-    const key = `${issue.summary}\0${issue.path || ""}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-}
-
 function readText(file) {
-  try {
-    return readFileSync(file, "utf8");
-  } catch {
-    return "";
-  }
+  try { return readFileSync(file, "utf8"); }
+  catch { return ""; }
 }
 
 function hashFile(file) {
@@ -699,11 +860,8 @@ function hashFile(file) {
 }
 
 function readdirSafe(dir) {
-  try {
-    return readdirSync(dir);
-  } catch {
-    return [];
-  }
+  try { return readdirSync(dir); }
+  catch { return []; }
 }
 
 function walk(root) {
@@ -721,36 +879,14 @@ function walk(root) {
   return out;
 }
 
-function walkDirs(root) {
-  if (!existsSync(root)) return [];
-  const out = [];
-  const stack = [root];
-  while (stack.length > 0) {
-    const current = stack.pop();
-    for (const name of readdirSafe(current)) {
-      const fullPath = path.join(current, name);
-      if (!isDirectory(fullPath)) continue;
-      out.push(fullPath);
-      stack.push(fullPath);
-    }
-  }
-  return out;
-}
-
 function isDirectory(file) {
-  try {
-    return statSync(file).isDirectory();
-  } catch {
-    return false;
-  }
+  try { return statSync(file).isDirectory(); }
+  catch { return false; }
 }
 
 function size(file) {
-  try {
-    return statSync(file).size;
-  } catch {
-    return 0;
-  }
+  try { return statSync(file).size; }
+  catch { return 0; }
 }
 
 function dirSize(root) {
@@ -758,15 +894,8 @@ function dirSize(root) {
 }
 
 function mtimeMs(file) {
-  try {
-    return statSync(file).mtimeMs;
-  } catch {
-    return Date.now();
-  }
-}
-
-function days(value) {
-  return value * 24 * 60 * 60 * 1000;
+  try { return statSync(file).mtimeMs; }
+  catch { return Date.now(); }
 }
 
 function formatBytes(bytes) {
