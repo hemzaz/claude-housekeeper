@@ -416,6 +416,11 @@ function detectMcpCommandMissing(context) {
     if (!server || typeof server.command !== "string") continue;
     const command = server.command;
     if (!command.startsWith("/")) continue;
+    // T-401: in safe mode, refuse the existsSync probe when the path crosses
+    // a sector boundary (per docs/safe-mode.md "Hard Rules"). Reading the
+    // string from settings is fine; checking the filesystem under a secret
+    // sector is not. Emit nothing rather than a misleading partial finding.
+    if (context.mode === "safe" && isSectorBoundaryPath(command, context)) continue;
     if (existsSync(command)) continue;
     out.push({
       id: "settings.mcp_command_missing",
@@ -609,8 +614,8 @@ function localCommandIdentityFindings(context, identical) {
   for (const command of collectCommands(localDir)) {
     const pluginCommands = context.pluginResources.commands.get(command.name) || [];
     if (pluginCommands.length === 0) continue;
-    const localHash = hashFile(command.path);
-    const hasIdentical = pluginCommands.some((pluginCommand) => hashFile(pluginCommand.path) === localHash);
+    const localHash = hashFile(command.path, context);
+    const hasIdentical = pluginCommands.some((pluginCommand) => hashFile(pluginCommand.path, context) === localHash);
     if (identical !== hasIdentical) continue;
     out.push({
       id: identical ? "registry.local_command_identical" : "registry.local_command_diverged",
@@ -642,7 +647,7 @@ function detectRegistryBrokenFrontmatter(context) {
   ];
   const out = [];
   for (const file of files) {
-    const frontmatter = parseFrontmatter(readText(file.path));
+    const frontmatter = parseFrontmatter(readText(file.path, context));
     const broken = !frontmatter || (file.type === "skill" ? !frontmatter.name : !frontmatter.description);
     if (!broken) continue;
     out.push({
@@ -938,12 +943,39 @@ function parseFrontmatter(text) {
   return data;
 }
 
-function readText(file) {
+// T-401: sector-boundary predicate per docs/surface-classification-spec.md §7
+// and docs/safe-mode.md "Hard Rules". Used in safe mode to skip content reads
+// under secret-adjacent subtrees. Metadata (existsSync of the parent dir,
+// listing entries) stays allowed because it does not open file contents.
+function isSectorBoundaryPath(target, context) {
+  if (!target) return false;
+  const home = context && context.home;
+  const norm = path.normalize(target);
+  if (home) {
+    const credentialsRoot = path.normalize(path.join(home, "credentials"));
+    if (norm === credentialsRoot || norm.startsWith(credentialsRoot + path.sep)) return true;
+  }
+  const base = path.basename(norm);
+  if (base.startsWith(".env") || base === ".env") return true;
+  // Path segment match for sector words used in the surface spec.
+  const segments = norm.split(path.sep);
+  for (const seg of segments) {
+    if (seg === "credentials") return true;
+    if (seg === "secrets") return true;
+  }
+  return false;
+}
+
+function readText(file, context) {
+  // T-401: in safe mode, never open content under sector-boundary paths.
+  if (context && context.mode === "safe" && isSectorBoundaryPath(file, context)) return "";
   try { return readFileSync(file, "utf8"); }
   catch { return ""; }
 }
 
-function hashFile(file) {
+function hashFile(file, context) {
+  // T-401: same content-read guard as readText.
+  if (context && context.mode === "safe" && isSectorBoundaryPath(file, context)) return "";
   return createHash("sha256").update(readFileSync(file)).digest("hex");
 }
 
