@@ -477,3 +477,40 @@ blocked_actions:
   - claim the server is broken before live status is checked
 ```
 
+## 15. secret-command-fragment
+
+```yaml
+id: secret-command-fragment
+purpose: |
+  Token-like fragments inside a command string must be redacted in the
+  rendered report, not just excluded (redaction-examples.md "Command
+  Strings"; protocol-contracts.md "Edge Case 14"; safe-mode.md "Privacy
+  Mode").
+mode_expectations:
+  safe:
+    claim_level: surface
+    stance: protect
+surfaces:
+  - path: ~/.claude/settings.json
+    surfaceClass: secret-adjacent
+    ownerClass: user-owned
+    loadBearingClass: known-load-bearing
+    sensitivityClass: secret-content
+    executionClass: shell-expansion-risk
+    rollbackClass: snapshot-possible
+    scopeClass: sector-boundary
+evidence:
+  structural:
+    - command string contains token-like env or argument pattern
+  missing:
+    - none for redaction
+finding:
+  class: orientation
+  stance: protect
+allowed_next_step: render the command with token fragments replaced by redaction placeholders
+blocked_actions:
+  - print the command raw
+  - omit the command string entirely from the report
+  - copy the token fragment into evidence or logs
+```
+
