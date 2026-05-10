@@ -14,19 +14,40 @@ layout can change.
 
 ## First Matrix
 
-| Dimension | Minimum first entry | State | Notes |
+The row below records the development environment used during the
+v0.1 release prep cycle. Maintainer fills in the exact `claude
+--version` value at tag time (see "How to update at release time").
+
+| Dimension | First entry | State | Notes |
 | --- | --- | --- | --- |
-| Claude Code version | exact version used during release | supported or degraded | record `claude --version` |
-| macOS | current maintainer OS | supported | first development target |
+| Claude Code version | unknown until tag | unknown until tested | filled at release time from `claude --version`; do not promote to `supported` without recording the exact version |
+| macOS | darwin 25.x (macOS 26 series) | supported | maintainer's development target |
 | Linux | one common distro | unknown until tested | required before broad claim |
 | WSL | WSL2 | unknown until tested | path and shell behavior may differ |
 | Windows native | PowerShell and cmd | unknown until tested | path separators and file locks matter |
 | Shell | zsh, bash | degraded until fixtures cover quoting | shell parsing is conservative |
-| Node | current LTS | supported after CI | package runtime |
+| Node | 20 LTS, 22 LTS | supported | both versions on the CI matrix |
 | Plugin wrapper | Claude plugin command | degraded | depends on Claude plugin loading |
-| Standalone CLI | local Node bin/package runner | supported after packaging | recovery surface |
+| Standalone CLI | local Node bin / `node scripts/claude-housekeeper.mjs` | supported | recovery surface; Phase 0 + Phase 2 ship a working CLI |
 | MCP config | structural parse only | degraded | startup requires consent |
 | Hooks | structural parse only | degraded | execution requires consent |
+
+## How to update at release time
+
+Before tagging `v0.1.0`, the maintainer captures the exact environment
+used to generate the release goldens and replaces the placeholder
+entries above:
+
+- `claude --version` — fill the Claude Code version row with the exact
+  value (no `unknown until tag` left); promote the row to `supported`
+  once the goldens are recaptured under that version.
+- `node --version` — confirm both Node 20 and Node 22 still pass CI; if
+  CI moves off Node 20, demote that entry.
+- `uname -a` — record the exact macOS kernel and architecture used for
+  the maintainer's row.
+- Linux, WSL, and Windows native rows remain `unknown until tested`
+  until a real fixture run on each platform has been completed and
+  recorded; do not relabel them based on inference.
 
 ## Feature Detection Rules
 
