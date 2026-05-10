@@ -26,7 +26,7 @@
   },
   "scripts": {
     "test": "node --test",
-    "lint": "node --check scripts/claude-housekeeper.mjs && node --check scripts/lib/audit.mjs && node --check scripts/format-check.mjs && node --check test/audit.test.mjs",
+    "lint": "node --check scripts/claude-housekeeper.mjs && node --check scripts/lib/audit.mjs && node --check scripts/format-check.mjs && node --check test/audit.test.mjs && node --check test/no-mutation.test.mjs",
     "format": "node scripts/format-check.mjs"
   },
   "keywords": [

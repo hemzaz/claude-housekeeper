@@ -82,6 +82,8 @@ export function auditClaudeHome(home, options = {}) {
 
   const visibleChecks = applyProtection(checks.filter((check) => selected.has(check.id)), context);
   return {
+    schemaVersion: "0.1-pre",
+    filesChanged: false,
     home,
     scope,
     configPath: context.config.file,
@@ -101,11 +103,13 @@ export function formatScorecard(report) {
       scorecardAction(check)
     ]);
 
-  if (rows.length === 0) return "SCORECARD\nNo issues found.";
+  if (rows.length === 0) return "HOUSEKEEPER REPORT\nNo files changed.\nSCORECARD\nNo issues found.";
 
   const idWidth = Math.max("check".length, ...rows.map((row) => row[0].length));
   const issueWidth = Math.max("issues".length, ...rows.map((row) => row[1].length));
   const lines = [
+    "HOUSEKEEPER REPORT",
+    "No files changed.",
     `SCORECARD${" ".repeat(Math.max(1, idWidth - 5))}  ${"issues".padStart(issueWidth)}   action`,
     `${"-".repeat(idWidth)}  ${"-".repeat(issueWidth)}   ${"-".repeat(14)}`
   ];
@@ -122,7 +126,7 @@ export function formatScorecard(report) {
 }
 
 export function formatPlan(report) {
-  const lines = [`PLAN for ${report.home}`, ""];
+  const lines = ["HOUSEKEEPER REPORT", "No files changed.", `PLAN for ${report.home}`, ""];
   let wroteAny = false;
 
   for (const check of report.checks) {
@@ -175,7 +179,7 @@ function checkConfig(context) {
     summary: `Housekeeper config is invalid JSON: ${context.config.error}`,
     path: context.config.file
   }] : [];
-  return check("config.invalid_json", issues, "fix config");
+  return check("config.invalid_json", issues, "review");
 }
 
 function protectIssue(check, issue, context) {
@@ -535,7 +539,7 @@ function checkSettingsJson(context) {
     summary: `settings.json is invalid JSON: ${context.settings.error}`,
     path: context.settingsFile
   }];
-  return check("settings.invalid_json", issues, "fix settings.json");
+  return check("settings.invalid_json", issues, "review");
 }
 
 function checkMissingMcpCommands(context) {
@@ -657,10 +661,10 @@ function issueMetadata(id) {
   if (id.includes("dangling") || id.includes("invalid_json")) {
     return {
       severity: "error",
-      risk: "repair",
+      risk: "none",
       confidence: "high",
       actionable: true,
-      proposedAction: "repair"
+      proposedAction: "none"
     };
   }
   return {
@@ -668,7 +672,7 @@ function issueMetadata(id) {
     risk: "reversible-cleanup",
     confidence: "medium",
     actionable: true,
-    proposedAction: "quarantine"
+    proposedAction: "none"
   };
 }
 
