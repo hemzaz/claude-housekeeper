@@ -237,3 +237,40 @@ blocked_actions:
   - propose cleanup from partial data
 ```
 
+## 9. interrupted-housekeeper-operation
+
+```yaml
+id: interrupted-housekeeper-operation
+purpose: |
+  Incomplete Housekeeper operation manifests block further work
+  (operational-readiness.md §4; protocol-contracts.md "Edge Case 17";
+  golden-reports.md §10).
+mode_expectations:
+  safe:
+    claim_level: finding
+    stance: block
+surfaces:
+  - path: ~/.claude/housekeeper/operations
+    surfaceClass: housekeeper-owned
+    ownerClass: housekeeper-owned
+    loadBearingClass: not-load-bearing
+    sensitivityClass: private-path
+    executionClass: inert
+    rollbackClass: manifest-backed
+    scopeClass: in-scope
+evidence:
+  structural:
+    - operation id directory exists
+    - manifest status is not verified
+  missing:
+    - recovery decision for interrupted operation
+finding:
+  class: hygiene
+  stance: block
+allowed_next_step: inspect operation record and choose recover, archive, or discard
+blocked_actions:
+  - start new mutation operation
+  - overwrite operation manifest
+  - hide Housekeeper self-failure
+```
+
