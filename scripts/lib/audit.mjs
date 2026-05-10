@@ -82,6 +82,8 @@ export function auditClaudeHome(home, options = {}) {
 
   const visibleChecks = applyProtection(checks.filter((check) => selected.has(check.id)), context);
   return {
+    schemaVersion: "0.1-pre",
+    filesChanged: false,
     home,
     scope,
     configPath: context.config.file,
