@@ -33,9 +33,15 @@ What did Housekeeper print? Paste sanitized output.
 
 If the report degraded or blocked, paste the exact stance and missing key.
 
+## Housekeeper version
+
 ## Claude Code version
 
 ## Node version
+
+## Operation id
+
+Always `none` in v0.1 unless Housekeeper printed an operation id.
 
 ## Redacted report JSON
 
