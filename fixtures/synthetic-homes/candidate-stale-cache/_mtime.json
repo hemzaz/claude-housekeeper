@@ -1,0 +1,10 @@
+{
+  "purpose": "Loader hint for fixture mtime setup. Git does not preserve mtimes, so the fixture loader must touch these paths to the listed offsets before invoking auditClaudeHome. Offsets are relative to test wall-clock now.",
+  "paths": [
+    {
+      "path": "home/.claude/plugins/cache/syn-market/syn-tool/0.9.0",
+      "mtimeOffsetDays": -45,
+      "rationale": "Outside the 7-day grace window per docs/loader-semantics.md grace constant and TASKBOARD T-X06 — exercises plugin.cache_unreferenced detector branch."
+    }
+  ]
+}

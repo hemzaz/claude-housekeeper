@@ -1,0 +1,34 @@
+HOUSEKEEPER REPORT
+No files changed.
+
+PRIMARY
+  stance: probe
+  finding: plugin cache version is not referenced by known registry evidence
+  evidence: installed registry parsed; version directory is outside known references
+  missing key: active session, process reference, or retention policy evidence
+  next step: run freshness probe or review manually
+
+STANCE SUMMARY
+  inform   0
+  watch    0
+  review   0
+  probe    1
+  protect  0
+  prepare  0
+  repair   0
+  block    0
+
+BOUNDARIES
+  protected: 0
+  sector-boundary: 0
+  secret-adjacent skipped: 0
+
+SCAN
+  mode: safe
+  degraded: no
+  skipped: live process and session checks
+
+BLOCKED ACTIONS
+  call unused
+  delete
+  quarantine without Housekeeper rollback proof
