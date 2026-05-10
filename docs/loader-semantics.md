@@ -2,15 +2,23 @@
 
 This document separates documented Claude Code behavior from inference and required tests.
 
+Audit-trail note: this revision applies the four CHANGED items from
+`notes/LOADER-SEMANTICS-AUDIT.md` (drift summary as of 2026-05-10:
+STILL_ACCURATE 7, CHANGED 4, NOW_UNKNOWN 1). The CHANGED items are §4
+source URL drift, §6 MCP duplicate matching key, §7 marketplace source-type
+enumeration, and §7 `strictKnownMarketplaces` demoted to NOW_UNKNOWN. See
+the audit for the full citation set.
+
 Sources:
 
 - Settings: https://code.claude.com/docs/en/configuration
 - Plugins: https://code.claude.com/docs/en/plugins
 - Plugins reference: https://code.claude.com/docs/en/plugins-reference
-- Skills: https://code.claude.com/docs/en/slash-commands
+- Skills: https://code.claude.com/docs/en/skills
 - Hooks: https://code.claude.com/docs/en/hooks
 - MCP: https://code.claude.com/docs/en/mcp
 - Debug configuration: https://code.claude.com/docs/en/debug-your-config
+- Plugin marketplaces: https://code.claude.com/docs/en/plugin-marketplaces (referenced but not yet audited; see §7)
 
 ## 1. Settings Scopes
 
@@ -205,13 +213,24 @@ Documented MCP scopes:
 - Project: current project only, shared via `.mcp.json`
 - User: all projects, private, stored in `~/.claude.json`
 
-Documented precedence for duplicate server names:
+Documented precedence for duplicate servers:
 
 1. Local
 2. Project
 3. User
 4. Plugin-provided servers
 5. claude.ai connectors
+
+Duplicate-detection matching key differs by source (per
+`notes/LOADER-SEMANTICS-AUDIT.md` §6 CHANGED):
+
+- Local, Project, and User scopes match duplicates by **server name**.
+- Plugin and claude.ai connector entries match by **endpoint** — the URL
+  for HTTP-style servers or the command string for stdio-style servers.
+
+A plugin or connector that points at the same URL or command as a
+higher-precedence server above it is treated as a duplicate of that
+server, even when the names differ.
 
 Documented plugin MCP behavior:
 
@@ -222,26 +241,43 @@ Documented plugin MCP behavior:
 
 Build implication:
 
-MCP config is credential-adjacent and can trigger external/local process behavior. Safe mode must parse config only; it must not start servers.
+MCP config is credential-adjacent and can trigger external/local process
+behavior. Safe mode must parse config only; it must not start servers.
+
+Any future `mcp.duplicate_registration` detector must use the two-key
+model: name comparison for Local/Project/User pairs, endpoint comparison
+(URL or command string) for any pair that involves a Plugin or
+claude.ai-connector entry. Name-only matching under-reports plugin or
+connector overlap and over-reports harmless name reuse across scopes.
 
 ## 7. Marketplace And Cache Behavior
 
 Status: `documented` for source types, managed restrictions, and major cache
 lifecycle rules; `unknown` for some cache internals.
 
-Documented marketplace source types include:
+Documented marketplace source types (per `plugins-reference`
+§"Version management" — see `notes/LOADER-SEMANTICS-AUDIT.md` §7 CHANGED):
 
-- GitHub
-- git
-- URL
-- npm
-- file
-- directory
-- settings inline
+- `github`
+- `url`
+- `git-subdir`
+- `npm`
+
+Plus relative-path entries inside a git-hosted marketplace, which inherit
+the marketplace's git source for version resolution. The earlier loose
+list ("git", "file", "directory", "settings inline") did not match the
+documented enum and is replaced.
+
+Status of `strictKnownMarketplaces`: NOW_UNKNOWN. The audited URL set did
+not include `https://code.claude.com/docs/en/plugin-marketplaces`, where
+managed marketplace restrictions are most likely documented. The key was
+not present on the configuration or plugins-reference pages that were
+fetched. Until the plugin-marketplaces page is audited, no policy
+detector should depend on `strictKnownMarketplaces`. A `probe` is
+required before any such detector can ship.
 
 Documented:
 
-- managed `strictKnownMarketplaces` can restrict marketplace sources
 - blocked marketplace sources are enforced before network/filesystem operations
 - marketplace plugins are copied into `~/.claude/plugins/cache`
 - each installed version is a separate directory
