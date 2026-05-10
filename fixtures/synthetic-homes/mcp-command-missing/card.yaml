@@ -1,0 +1,33 @@
+id: mcp-command-missing
+purpose: |
+  MCP server config with a missing direct command path is a prepare
+  candidate; safe mode never starts the server (loader-semantics.md §6;
+  safe-mode.md "Hard Rules"; protocol-contracts.md "Edge Case 15").
+mode_expectations:
+  safe:
+    claim_level: finding
+    stance: prepare
+surfaces:
+  - path: .mcp.json
+    surfaceClass: authored-config
+    ownerClass: project-owned
+    loadBearingClass: known-load-bearing
+    sensitivityClass: secret-adjacent
+    executionClass: starts-mcp
+    rollbackClass: snapshot-possible
+    scopeClass: in-scope
+evidence:
+  structural:
+    - MCP config parses
+    - server command direct absolute path does not exist
+  missing:
+    - /mcp status from a live Claude session
+    - startup consent
+finding:
+  class: integrity
+  stance: prepare
+allowed_next_step: patch preview only; do not start the server
+blocked_actions:
+  - start the MCP server
+  - edit .mcp.json without consent
+  - claim the server is broken before live status is checked

@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "syn-mcp-server": {
+      "command": "/Users/syn-user/missing/server",
+      "args": ["--syn-flag"]
+    }
+  }
+}

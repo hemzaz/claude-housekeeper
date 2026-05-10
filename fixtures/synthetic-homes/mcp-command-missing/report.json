@@ -1,0 +1,60 @@
+{
+  "schemaVersion": "0.1-pre",
+  "mode": "safe",
+  "home": "<home>",
+  "filesChanged": false,
+  "primary": "settings.mcp_command_missing",
+  "stanceSummary": {
+    "inform": 0,
+    "watch": 0,
+    "review": 0,
+    "probe": 0,
+    "protect": 0,
+    "prepare": 1,
+    "repair": 0,
+    "block": 0
+  },
+  "findings": [
+    {
+      "id": "settings.mcp_command_missing",
+      "class": "integrity",
+      "claimLevel": "finding",
+      "stance": "prepare",
+      "summary": "MCP server config references a missing direct executable path",
+      "surface": {
+        "surfaceClass": "authored-config",
+        "ownerClass": "project-owned",
+        "loadBearingClass": "known-load-bearing",
+        "sensitivityClass": "secret-adjacent",
+        "executionClass": "starts-mcp",
+        "rollbackClass": "snapshot-possible",
+        "scopeClass": "in-scope",
+        "confidence": "medium",
+        "limits": ["safe-mode-no-mcp-start"]
+      },
+      "evidence": {
+        "structural": [
+          "MCP config parsed",
+          "server command contains an absolute path that does not exist"
+        ],
+        "loader": [],
+        "behavioral": [],
+        "ownership": [],
+        "freshness": [],
+        "reversibility": [],
+        "missing": [
+          "live /mcp status",
+          "startup consent"
+        ]
+      },
+      "nextAllowedStep": "patch preview only; do not start the server",
+      "blockedActions": [
+        "start the MCP server",
+        "edit .mcp.json without consent",
+        "claim the server is broken before live status is checked"
+      ]
+    }
+  ],
+  "boundaries": [],
+  "degraded": []
+}
