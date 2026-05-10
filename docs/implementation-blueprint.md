@@ -198,6 +198,11 @@ The first implementation should keep modules small and boring:
 - `fixtures`: synthetic homes and acceptance cards
 - `tests`: contract and fixture tests
 
+Plus two infrastructure modules required by Phase 1: `contracts` (data-shape
+factories from `docs/schemas.md`) and `audit` (orchestrator that wires
+detectors → surface → evidence → stance → report). These are not standalone
+first-wedge concerns; they exist to compose the listed modules.
+
 Do not create modules for mutation, snapshots, quarantine, hardening, learning,
 or rollback in the first wedge.
 

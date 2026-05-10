@@ -3,8 +3,8 @@ No files changed.
 
 PRIMARY
   stance: protect
-  finding: protected local command appears to shadow a plugin command
-  evidence: local command name matches plugin-provided resource; do-not-touch rule matched
+  finding: do-not-touch rules match secret-adjacent paths in both parent and child directions
+  evidence: do-not-touch rule matched ~/.env; do-not-touch rule matched ~/.claude/credentials/**
   missing key: none for protection
   next step: none
 
@@ -20,10 +20,15 @@ STANCE SUMMARY
 
 BOUNDARIES
   protected: 1
-  sector-boundary: 0
+  sector-boundary: 1
+  parent-contains-boundary: 1
   secret-adjacent skipped: 0
 
 PROTECTED
-  path: ~/.claude/commands/local-build.md
+  path: ~/.env
+  reason: do-not-touch rule
+  action: none
+
+  path: ~/.claude/credentials/**
   reason: do-not-touch rule
   action: none
