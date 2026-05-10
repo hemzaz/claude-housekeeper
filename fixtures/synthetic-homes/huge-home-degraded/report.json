@@ -1,0 +1,62 @@
+{
+  "schemaVersion": "0.1-pre",
+  "mode": "safe",
+  "home": "<home>",
+  "filesChanged": false,
+  "primary": "home.scan_budget_hit",
+  "stanceSummary": {
+    "inform": 1,
+    "watch": 0,
+    "review": 0,
+    "probe": 0,
+    "protect": 0,
+    "prepare": 0,
+    "repair": 0,
+    "block": 0
+  },
+  "findings": [
+    {
+      "id": "home.scan_budget_hit",
+      "class": "orientation",
+      "claimLevel": "observation",
+      "stance": "inform",
+      "summary": "scan budget was reached before project history traversal completed",
+      "surface": {
+        "surfaceClass": "claude-app-data",
+        "ownerClass": "claude-managed",
+        "loadBearingClass": "possibly-load-bearing",
+        "sensitivityClass": "private-path",
+        "executionClass": "inert",
+        "rollbackClass": "snapshot-possible",
+        "scopeClass": "in-scope",
+        "confidence": "low",
+        "limits": ["safe-mode-scan-budget"]
+      },
+      "evidence": {
+        "structural": [
+          "max files visited budget reached under ~/.claude/projects"
+        ],
+        "loader": [],
+        "behavioral": [],
+        "ownership": [],
+        "freshness": [],
+        "reversibility": [],
+        "missing": ["full traversal"]
+      },
+      "nextAllowedStep": "run explicit full scan if project-history findings are needed",
+      "blockedActions": [
+        "summarize scan as complete",
+        "propose action from partial project-history evidence"
+      ]
+    }
+  ],
+  "boundaries": [],
+  "degraded": [
+    {
+      "scope": "traversal",
+      "reason": "max files budget reached",
+      "path": "~/.claude/projects",
+      "skipped": ["remaining project history after budget"]
+    }
+  ]
+}
