@@ -15,9 +15,8 @@ redacted, or internal.
 
 ## Stable Fields For `0.1`
 
-Source: `scripts/lib/report.mjs` `renderJsonReport()` (lines 107-121) plus
-`stripFindingForJson()` (lines 269-283) and `scripts/lib/audit.mjs`
-`collectBoundaries()` (lines 203-215).
+Source: `scripts/lib/report.mjs` `renderJsonReport()` plus
+`stripFindingForJson()`, and `scripts/lib/audit.mjs` `collectBoundaries()`.
 
 | Field | Class | Rule |
 | --- | --- | --- |
@@ -58,15 +57,14 @@ array of strings; empty arrays are valid.
 ### `findings[].proposedProbe` element shape
 
 Present only when the finding's next step references a live probe
-(`scripts/lib/audit.mjs` `pickProbeMetadata`, lines 281-294). Keys:
+(`scripts/lib/audit.mjs` `pickProbeMetadata`). Keys:
 `reference` (probe label, e.g. `claude --debug hooks`), `class`
 (`loader` or `behavioral`), `mayExecute` (string describing what the
 probe may execute), `consent` (`medium` or `high`).
 
 ### `boundaries[]` element shape
 
-Each boundary entry (per `collectBoundaries` in `scripts/lib/audit.mjs`,
-lines 203-215):
+Each boundary entry (per `collectBoundaries` in `scripts/lib/audit.mjs`):
 
 | Key | Class | Rule |
 | --- | --- | --- |
@@ -78,8 +76,8 @@ lines 203-215):
 ### `degraded[]` element shape
 
 Each degraded entry is either a string or an object describing a
-budget hit (per `scripts/lib/report.mjs` `formatScanDegradedSection`,
-lines 254-267). Object keys when present:
+budget hit (per `scripts/lib/report.mjs` `formatScanDegradedSection`).
+Object keys when present:
 
 | Key | Class | Rule |
 | --- | --- | --- |
@@ -129,4 +127,3 @@ their fixture's `card.yaml` `mode_expectations` block.
 
 Byte-compare tests (T-203) MUST use the per-fixture mode rather than assume
 a single default.
-
