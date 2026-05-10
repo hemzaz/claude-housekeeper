@@ -15,22 +15,78 @@ redacted, or internal.
 
 ## Stable Fields For `0.1`
 
+Source: `scripts/lib/report.mjs` `renderJsonReport()` (lines 107-121) plus
+`stripFindingForJson()` (lines 269-283) and `scripts/lib/audit.mjs`
+`collectBoundaries()` (lines 203-215).
+
 | Field | Class | Rule |
 | --- | --- | --- |
-| `schemaVersion` | stable | required |
-| `mode` | stable | `safe`, `diagnose`, `live`, or future enum |
-| `filesChanged` | stable | required boolean |
-| `primary` | stable, nullable | finding id or null |
-| `stanceSummary` | stable | all stance keys present |
+| `schemaVersion` | stable | required string; `0.1-pre` until tag, then `0.1` |
+| `mode` | stable | `safe`, `diagnose`, `plan`, `live`, or future enum |
+| `home` | stable | scanned home root path |
+| `generatedAt` | stable | ISO 8601 timestamp |
+| `filesChanged` | stable | required boolean; always `false` in v0.1 |
+| `primary` | stable, nullable | finding id of the primary finding, or null |
+| `stanceSummary` | stable | all eight stance keys present (`inform`, `watch`, `review`, `probe`, `protect`, `prepare`, `repair`, `block`) |
 | `findings[].id` | stable | namespaced id |
 | `findings[].class` | stable | broad finding family |
 | `findings[].claimLevel` | stable | evidence ladder level |
 | `findings[].stance` | stable | user-facing stance |
+| `findings[].summary` | stable | one-line human summary string |
 | `findings[].surface` | stable | surface classification object |
 | `findings[].evidence` | stable | evidence arrays by key class |
+| `findings[].nextAllowedStep` | stable | string; the next step the stance permits |
 | `findings[].blockedActions` | stable | strings are descriptive, not enum-locked |
-| `boundaries` | stable | list may be empty |
-| `degraded` | stable | list may be empty |
+| `findings[].proposedProbe` | stable, nullable | probe metadata object when next step references a live probe (T-210); absent otherwise |
+| `boundaries` | stable | list may be empty; element shape below |
+| `degraded` | stable | list may be empty; element shape below |
+
+### `findings[].surface` element shape
+
+Surface classification keys present on every finding (per
+`makeSurfaceClassification` in `scripts/lib/contracts.mjs`):
+`surfaceClass`, `ownerClass`, `loadBearingClass`, `sensitivityClass`,
+`executionClass`, `rollbackClass`, `scopeClass`, `confidence`, `limits`.
+
+### `findings[].evidence` element shape
+
+Evidence keys present on every finding (per `makeEvidenceSet` in
+`scripts/lib/contracts.mjs`): `structural`, `loader`, `behavioral`,
+`ownership`, `freshness`, `reversibility`, `missing`. Each value is an
+array of strings; empty arrays are valid.
+
+### `findings[].proposedProbe` element shape
+
+Present only when the finding's next step references a live probe
+(`scripts/lib/audit.mjs` `pickProbeMetadata`, lines 281-294). Keys:
+`reference` (probe label, e.g. `claude --debug hooks`), `class`
+(`loader` or `behavioral`), `mayExecute` (string describing what the
+probe may execute), `consent` (`medium` or `high`).
+
+### `boundaries[]` element shape
+
+Each boundary entry (per `collectBoundaries` in `scripts/lib/audit.mjs`,
+lines 203-215):
+
+| Key | Class | Rule |
+| --- | --- | --- |
+| `type` | stable | `protected`, `sector-boundary`, or `secret-adjacent` |
+| `path` | stable | target path that triggered the boundary |
+| `reason` | stable | human-readable explanation |
+| `findingId` | stable | id of the finding that produced this boundary |
+
+### `degraded[]` element shape
+
+Each degraded entry is either a string or an object describing a
+budget hit (per `scripts/lib/report.mjs` `formatScanDegradedSection`,
+lines 254-267). Object keys when present:
+
+| Key | Class | Rule |
+| --- | --- | --- |
+| `budget` | stable | which scan budget tripped (e.g. `maxFiles`, `maxBytes`, `maxWallMs`) |
+| `skipped` | stable | string description of the skipped subtree |
+| `effect` | stable | what evidence was not collected |
+| `nextStep` | stable | recommended follow-up action |
 
 ## Experimental Fields
 
