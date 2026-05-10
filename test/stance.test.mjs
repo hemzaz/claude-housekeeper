@@ -188,7 +188,11 @@ test("matrix: malformed settings with exact location → prepare", () => {
   assert.equal(s.stance, "prepare");
 });
 
-test("matrix: malformed settings with approved patch + snapshot + consent → repair", () => {
+// v0.1 degradation per docs/decision-calculus.md §13: a path that would
+// otherwise return `repair` returns `prepare` with the deferred-step note.
+// In v0.4+, when rollback infrastructure ships, this test flips to expect
+// `repair` again.
+test("matrix: malformed settings with approved patch + snapshot + consent → prepare (v0.1 degradation)", () => {
   const s = decideStance({
     surface: makeSurfaceClassification({
       surfaceClass: "authored-config",
@@ -199,7 +203,9 @@ test("matrix: malformed settings with approved patch + snapshot + consent → re
     findingClass: "integrity",
     consentGranted: true
   });
-  assert.equal(s.stance, "repair");
+  assert.equal(s.stance, "prepare");
+  assert.equal(s.nextAllowedStep, "deferred until v0.4 rollback infrastructure");
+  assert.equal(s.missingKey, "v0.4 rollback infrastructure");
 });
 
 test("matrix: missing rollback proof → block", () => {
@@ -284,4 +290,96 @@ test("shell-expansion-risk → probe", () => {
     })
   });
   assert.equal(s.stance, "probe");
+});
+
+// ---------- v0.1 degradation (§13): repair stance must NEVER appear ----------
+
+// Build a Cartesian-style sweep of plausible inputs that historically could
+// have produced `repair`, then assert no combination escapes the §13 guard.
+// Spec source: docs/decision-calculus.md §13.
+
+const SAFE_AND_DIAGNOSE_MODES = ["safe", "diagnose"];
+const FINDING_CLASSES = ["integrity", "hygiene", "shadow", "divergence", "orientation", "contamination", "possession"];
+const ROLLBACK_CLASSES = ["manifest-backed", "snapshot-possible", "checkpoint-only", "unknown"];
+const SURFACE_CLASSES = ["authored-config", "claude-app-data", "secret-adjacent", "executable-surface", "external-reference"];
+const CONSENT_VALUES = [true, false];
+
+test("v0.1 §13: repair never appears in safe or diagnose mode (input sweep)", () => {
+  for (const mode of SAFE_AND_DIAGNOSE_MODES) {
+    for (const findingClass of FINDING_CLASSES) {
+      for (const rollbackClass of ROLLBACK_CLASSES) {
+        for (const surfaceClass of SURFACE_CLASSES) {
+          for (const consentGranted of CONSENT_VALUES) {
+            const s = decideStance({
+              surface: makeSurfaceClassification({
+                surfaceClass,
+                ownerClass: "user-owned",
+                rollbackClass,
+                scopeClass: "in-scope"
+              }),
+              findingClass,
+              consentGranted,
+              mode
+            });
+            assert.notEqual(
+              s.stance,
+              "repair",
+              `repair leaked under mode=${mode} findingClass=${findingClass} rollbackClass=${rollbackClass} surfaceClass=${surfaceClass} consent=${consentGranted}`
+            );
+          }
+        }
+      }
+    }
+  }
+});
+
+test("v0.1 §13: repair-eligible inputs degrade to prepare with deferred step", () => {
+  // The classic repair-eligible path: integrity finding, manifest-backed
+  // rollback, consent already granted. v0.4+ would return `repair`. v0.1
+  // returns `prepare` with the deferred-step note.
+  for (const mode of SAFE_AND_DIAGNOSE_MODES) {
+    const s = decideStance({
+      surface: makeSurfaceClassification({
+        surfaceClass: "authored-config",
+        ownerClass: "user-owned",
+        rollbackClass: "manifest-backed",
+        scopeClass: "in-scope"
+      }),
+      findingClass: "integrity",
+      consentGranted: true,
+      mode
+    });
+    assert.equal(s.stance, "prepare");
+    assert.equal(s.nextAllowedStep, "deferred until v0.4 rollback infrastructure");
+    assert.equal(s.missingKey, "v0.4 rollback infrastructure");
+  }
+});
+
+test("v0.1 §13: degradation does not weaken §5 hard overrides", () => {
+  // Even with a repair-eligible input shape, do-not-touch still wins as
+  // protect (§5), and checkpoint-only still wins as block (§5).
+  const protectS = decideStance({
+    surface: makeSurfaceClassification({
+      surfaceClass: "authored-config",
+      ownerClass: "user-owned",
+      rollbackClass: "manifest-backed",
+      scopeClass: "in-scope"
+    }),
+    findingClass: "integrity",
+    consentGranted: true,
+    policy: { matches: [{ type: "doNotTouch", reason: "user-stated" }] }
+  });
+  assert.equal(protectS.stance, "protect");
+
+  const blockS = decideStance({
+    surface: makeSurfaceClassification({
+      surfaceClass: "authored-config",
+      ownerClass: "user-owned",
+      rollbackClass: "checkpoint-only",
+      scopeClass: "in-scope"
+    }),
+    findingClass: "integrity",
+    consentGranted: true
+  });
+  assert.equal(blockS.stance, "block");
 });

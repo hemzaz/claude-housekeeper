@@ -51,6 +51,43 @@
         "infer effective MCP",
         "mutate without snapshot"
       ]
+    },
+    {
+      "id": "settings.dependent_inference_blocked",
+      "class": "integrity",
+      "claimLevel": "finding",
+      "stance": "block",
+      "summary": "dependent hook and MCP inference cannot run while settings.json is invalid",
+      "surface": {
+        "surfaceClass": "authored-config",
+        "ownerClass": "user-owned",
+        "loadBearingClass": "known-load-bearing",
+        "sensitivityClass": "private-path",
+        "executionClass": "inert",
+        "rollbackClass": "snapshot-possible",
+        "scopeClass": "in-scope",
+        "confidence": "high",
+        "limits": []
+      },
+      "evidence": {
+        "structural": [
+          "parent settings.json finding has stance prepare and is unresolved"
+        ],
+        "loader": [],
+        "behavioral": [],
+        "ownership": [],
+        "freshness": [],
+        "reversibility": [],
+        "missing": [
+          "valid settings.json parse"
+        ]
+      },
+      "nextAllowedStep": "resolve settings.invalid_json, then re-run inference",
+      "blockedActions": [
+        "infer effective hooks",
+        "infer effective MCP",
+        "report hook or MCP findings as authoritative"
+      ]
     }
   ],
   "boundaries": [],
