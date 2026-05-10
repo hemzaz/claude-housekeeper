@@ -57,12 +57,21 @@ const SCOPE_TO_DETECTORS = {
     "registry.local_command_diverged",
     "registry.broken_frontmatter"
   ],
-  housekeeper: ["housekeeper.interrupted_operation"]
+  housekeeper: [
+    "housekeeper.interrupted_operation",
+    "housekeeper.config_invalid",
+    "housekeeper.operations_unreadable"
+  ]
 };
 
 // Cross-cutting detectors that always run regardless of `--scope`.
+// Self-failure detectors (T-409) live here because they describe Housekeeper's
+// own state and must never be filtered by scope.
 const ALWAYS_ON_DETECTORS = new Set([
   "housekeeper.interrupted_operation",
+  "housekeeper.config_invalid",
+  "housekeeper.operations_unreadable",
+  "home.not_found",
   "home.scan_budget_hit"
 ]);
 
@@ -77,10 +86,24 @@ export function assembleReport(home, options = {}) {
   const mode = options.mode || "diagnose";
   const scanLimits = pickScanLimits(options.scanLimits);
   const selected = selectedDetectors(scope);
+
+  // T-409: home-not-found is the first self-failure gate. If <home>/.claude
+  // does not exist (or is not a directory), emit a `block` finding and stop
+  // dependent inference. Required by docs/operational-readiness.md §4.
+  const homeMissing = !existsSync(home) || !isDirectory(home);
+  if (homeMissing) {
+    return earlyReport(home, mode, [detectHomeNotFound(home)]);
+  }
+
   const context = loadContext(home, { ...options, mode, scanLimits });
   const policyMatchesFor = (target) => collectPolicyMatches(target, context);
 
   const detectorOutputs = [];
+  // T-409: self-failure detectors run BEFORE everything else so they appear
+  // in the report even when downstream detectors crash on the same state.
+  push(detectorOutputs, selected, detectHousekeeperConfigInvalid(context));
+  push(detectorOutputs, selected, detectHousekeeperOperationsUnreadable(context));
+
   push(detectorOutputs, selected, detectSettingsInvalidJson(context));
   pushAll(detectorOutputs, selected, detectHookPathDangling(context));
   pushAll(detectorOutputs, selected, detectHookCommandShellAmbiguous(context));
@@ -671,10 +694,14 @@ function detectRegistryBrokenFrontmatter(context) {
 // even though v0.1 has no mutation. Required by operational-readiness.md §4 +
 // protocol-contracts.md §17 + golden #10. Stance is forced to `block`.
 function detectInterruptedOperation(context) {
-  const opsDir = path.join(context.home, "housekeeper", "operations");
-  if (!existsSync(opsDir)) return null;
+  // T-409: skip cleanly when the operations directory is unreadable; the
+  // dedicated `housekeeper.operations_unreadable` finding surfaces the gap
+  // instead, and the report's degraded[] entry tells the user why this
+  // detector did not run.
+  if (!context.operationsDir.exists || context.operationsDir.unreadable) return null;
+  const opsDir = context.operationsDir.path;
   const manifests = [];
-  for (const name of readdirSafe(opsDir)) {
+  for (const name of context.operationsDir.names || []) {
     if (!name.endsWith(".json")) continue;
     const file = path.join(opsDir, name);
     const parsed = readJson(file);
@@ -715,6 +742,136 @@ function detectInterruptedOperation(context) {
     ],
     forceStance: "block"
   };
+}
+
+// T-409: housekeeper.config_invalid — emit when policy config exists but is
+// malformed JSON. Stance: `inform` (orientation; not a hygiene problem and
+// nothing to repair). The audit continues with default policy so dependent
+// detectors do not crash. Required by docs/operational-readiness.md §4 +
+// docs/state-governance.md §4 ("If Housekeeper state is corrupt: report it").
+function detectHousekeeperConfigInvalid(context) {
+  const error = context.config && context.config.error;
+  if (!error) return null;
+  const file = context.config.file || path.join(context.home, "housekeeper", "config.json");
+  return {
+    id: "housekeeper.config_invalid",
+    class: "orientation",
+    claimLevel: "observation",
+    targetPath: file,
+    surface: makeSurfaceClassification({
+      surfaceClass: "housekeeper-owned",
+      ownerClass: "housekeeper-owned",
+      loadBearingClass: "not-load-bearing",
+      sensitivityClass: "private-path",
+      executionClass: "inert",
+      rollbackClass: "snapshot-possible",
+      scopeClass: "in-scope",
+      confidence: "high"
+    }),
+    evidence: {
+      structural: [
+        `Housekeeper config at ${file} could not be parsed`,
+        `parser error: ${error}`,
+        "audit continued with default policy (no doNotTouch rules)"
+      ]
+    },
+    missingKeys: ["valid Housekeeper policy"],
+    summary: "Housekeeper config is invalid JSON; running with defaults",
+    nextAllowedStep: "edit the config manually or remove it to restore defaults",
+    blockedActions: ["overwrite config without user review"],
+    forceStance: "inform"
+  };
+}
+
+// T-409: housekeeper.operations_unreadable — emit when the operations
+// directory exists but cannot be listed (permissions, bad mount, etc.).
+// Stance: `inform` AND a `degraded[]` entry so consumers can show the
+// limitation in the SCAN DEGRADED section. Required by
+// docs/operational-readiness.md §4.
+function detectHousekeeperOperationsUnreadable(context) {
+  if (!context.operationsDir.unreadable) return null;
+  return {
+    id: "housekeeper.operations_unreadable",
+    class: "orientation",
+    claimLevel: "observation",
+    targetPath: context.operationsDir.path,
+    surface: makeSurfaceClassification({
+      surfaceClass: "housekeeper-owned",
+      ownerClass: "housekeeper-owned",
+      loadBearingClass: "not-load-bearing",
+      sensitivityClass: "private-path",
+      executionClass: "inert",
+      rollbackClass: "manifest-backed",
+      scopeClass: "in-scope",
+      confidence: "high"
+    }),
+    evidence: {
+      structural: [
+        `operations directory exists at ${context.operationsDir.path}`,
+        `directory is not readable: ${context.operationsDir.error || "unknown error"}`,
+        "interrupted-operation detector skipped due to read failure"
+      ]
+    },
+    missingKeys: ["operations manifest readability"],
+    summary: "Housekeeper operations directory is unreadable",
+    nextAllowedStep: "fix permissions or report the environment damage",
+    blockedActions: ["assume no interrupted operation", "start a new mutation"],
+    forceStance: "inform"
+  };
+}
+
+// T-409: home.not_found — emitted when the requested home directory does not
+// exist. Stance: `block` per the user's task requirement; the report still
+// renders with a single block finding so the CLI can exit non-zero cleanly
+// without throwing.
+function detectHomeNotFound(home) {
+  return {
+    id: "home.not_found",
+    class: "integrity",
+    targetPath: home,
+    surface: makeSurfaceClassification({
+      surfaceClass: "external-reference",
+      ownerClass: "user-owned",
+      loadBearingClass: "unknown",
+      sensitivityClass: "unknown",
+      executionClass: "inert",
+      rollbackClass: "not-applicable",
+      scopeClass: "in-scope",
+      confidence: "high"
+    }),
+    evidence: {
+      structural: [`requested home does not exist or is not a directory: ${home}`]
+    },
+    missingKeys: ["accessible Claude home directory"],
+    summary: "Claude home directory was not found",
+    nextAllowedStep: "verify --home value or create the directory before re-running",
+    blockedActions: ["dependent inference", "settings parsing", "plugin scan", "operations scan"],
+    forceStance: "block"
+  };
+}
+
+// T-409: build a minimal Report when home is missing. Skips the normal
+// pipeline so missing directories cannot crash downstream detectors.
+function earlyReport(home, mode, detectorOutputs) {
+  const findings = detectorOutputs.filter(Boolean).map((raw) => buildFinding(raw, {
+    home,
+    mode,
+    policyMatchesFor: () => []
+  }));
+  const stanceSummary = countStances(findings);
+  const boundaries = collectBoundaries(findings);
+  const primary = pickPrimary(findings);
+  return makeReport({
+    schemaVersion: SCHEMA_VERSION,
+    mode,
+    home,
+    generatedAt: new Date().toISOString(),
+    primary: primary ? primary.id : null,
+    stanceSummary,
+    findings,
+    boundaries,
+    degraded: []
+  });
 }
 
 // T-402: emit a single orientation finding when the bounded projects walk hit
@@ -786,6 +943,21 @@ function loadContext(home, options) {
   const projectsScan = walkBounded(projectsRoot, scanLimits);
   const degraded = [...projectsScan.degraded];
 
+  // T-409: operations directory readability probe. Records whether the dir
+  // exists but cannot be listed (permission denial). The detector reads
+  // this to surface a `housekeeper.operations_unreadable` finding and
+  // contributes a `degraded[]` entry so SCAN DEGRADED renders.
+  const operationsDir = probeOperationsDir(home);
+  if (operationsDir.unreadable) {
+    degraded.push({
+      kind: "scan-degraded",
+      reason: "operations-unreadable",
+      path: operationsDir.path,
+      effect: "interrupted-operation detector skipped",
+      nextStep: "fix permissions on the operations directory"
+    });
+  }
+
   return {
     home,
     installed,
@@ -798,9 +970,31 @@ function loadContext(home, options) {
     scanLimits,
     projectsRoot,
     projectsScan,
+    operationsDir,
     degraded,
     now: Date.now()
   };
+}
+
+// T-409: probe operations directory for existence and readability without
+// throwing. Returns one of three states:
+//   { exists: false } — no operations dir; nothing to surface
+//   { exists: true, unreadable: true, error } — exists but readdir failed
+//   { exists: true, unreadable: false, names } — exists and readable
+function probeOperationsDir(home) {
+  const opsPath = path.join(home, "housekeeper", "operations");
+  if (!existsSync(opsPath)) return { path: opsPath, exists: false, unreadable: false };
+  try {
+    const names = readdirSync(opsPath);
+    return { path: opsPath, exists: true, unreadable: false, names };
+  } catch (error) {
+    return {
+      path: opsPath,
+      exists: true,
+      unreadable: true,
+      error: error.code || error.message || "unknown"
+    };
+  }
 }
 
 function collectPolicyMatches(targetPath, context) {
