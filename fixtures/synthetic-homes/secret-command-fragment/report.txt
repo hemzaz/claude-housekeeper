@@ -1,0 +1,35 @@
+HOUSEKEEPER REPORT
+No files changed.
+
+PRIMARY
+  stance: protect
+  finding: a hook command string contains a token-like env fragment
+  evidence: command string parsed; token-like pattern matched inside command
+  missing key: none for redaction
+  next step: none
+
+STANCE SUMMARY
+  inform   0
+  watch    0
+  review   0
+  probe    0
+  protect  1
+  prepare  0
+  repair   0
+  block    0
+
+BOUNDARIES
+  protected: 1
+  sector-boundary: 1
+  secret-adjacent skipped: 0
+
+PROTECTED
+  path: ~/.claude/settings.json
+  reason: hook command contains a token-like env fragment
+  command: ANTHROPIC_API_KEY=<redacted> /usr/local/bin/syn-notify
+  action: none
+
+BLOCKED ACTIONS
+  print the command raw
+  omit the command string entirely from the report
+  copy the token fragment into evidence or logs

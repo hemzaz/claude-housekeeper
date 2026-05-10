@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "ANTHROPIC_API_KEY=sk-syn-0123456789abcdef /usr/local/bin/syn-notify"
+          }
+        ]
+      }
+    ]
+  }
+}
