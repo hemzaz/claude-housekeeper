@@ -1,0 +1,25 @@
+HOUSEKEEPER REPORT
+No files changed.
+
+PRIMARY
+  stance: block
+  finding: requested action has only Claude checkpoint context, not Housekeeper rollback proof
+  evidence: Claude checkpoint exists; no Housekeeper snapshot manifest exists
+  missing key: Housekeeper operation manifest and exact-byte snapshot
+  next step: create Housekeeper rollback plan before mutation
+
+STANCE SUMMARY
+  inform   0
+  watch    0
+  review   0
+  probe    0
+  protect  0
+  prepare  0
+  repair   0
+  block    1
+
+BLOCKED
+  action: quarantine plugin cache version
+  reason: rollback proof is checkpoint-only
+  allowed now: report
+  not allowed: mutate

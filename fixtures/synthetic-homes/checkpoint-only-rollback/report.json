@@ -1,0 +1,60 @@
+{
+  "schemaVersion": "0.1-pre",
+  "mode": "safe",
+  "home": "<home>",
+  "filesChanged": false,
+  "primary": "rollback.checkpoint_only",
+  "stanceSummary": {
+    "inform": 0,
+    "watch": 0,
+    "review": 0,
+    "probe": 0,
+    "protect": 0,
+    "prepare": 0,
+    "repair": 0,
+    "block": 1
+  },
+  "findings": [
+    {
+      "id": "rollback.checkpoint_only",
+      "class": "hygiene",
+      "claimLevel": "finding",
+      "stance": "block",
+      "summary": "requested action has only Claude checkpoint context, not Housekeeper rollback proof",
+      "surface": {
+        "surfaceClass": "claude-app-data",
+        "ownerClass": "claude-managed",
+        "loadBearingClass": "possibly-load-bearing",
+        "sensitivityClass": "private-path",
+        "executionClass": "inert",
+        "rollbackClass": "checkpoint-only",
+        "scopeClass": "in-scope",
+        "confidence": "medium",
+        "limits": ["safe-mode-no-loader-key"]
+      },
+      "evidence": {
+        "structural": [],
+        "loader": [],
+        "behavioral": [],
+        "ownership": [],
+        "freshness": [],
+        "reversibility": [
+          "Claude checkpoint exists",
+          "no Housekeeper snapshot manifest exists"
+        ],
+        "missing": [
+          "Housekeeper operation manifest",
+          "Housekeeper snapshot"
+        ]
+      },
+      "nextAllowedStep": "create Housekeeper rollback plan before mutation",
+      "blockedActions": [
+        "quarantine",
+        "purge",
+        "cite Claude checkpoint as rollback proof"
+      ]
+    }
+  ],
+  "boundaries": [],
+  "degraded": []
+}

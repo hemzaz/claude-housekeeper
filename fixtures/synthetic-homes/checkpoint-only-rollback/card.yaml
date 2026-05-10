@@ -1,0 +1,22 @@
+id: checkpoint-only-rollback
+purpose: Claude checkpointing cannot satisfy Housekeeper rollback.
+mode_expectations:
+  plan:
+    claim_level: finding
+    stance: block
+surfaces:
+  - path: ~/.claude/plugins/cache/syn-market/syn-tool/0.9.0
+    rollbackClass: checkpoint-only
+evidence:
+  reversibility:
+    - Claude checkpoint exists
+  missing:
+    - Housekeeper operation manifest
+    - Housekeeper snapshot
+finding:
+  class: hygiene
+  stance: block
+allowed_next_step: create Housekeeper rollback plan
+blocked_actions:
+  - quarantine
+  - purge
