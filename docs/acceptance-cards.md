@@ -187,6 +187,12 @@ blocked_actions:
 
 ## 7. invalid-settings
 
+Per `docs/protocol-contracts.md` Edge Case 10 ("Invalid Settings"), invalid
+core config disables advanced inference: stance is `prepare` for the parse
+repair AND `block` for dependent inference. The card declares BOTH findings
+as outputs of this fixture; the rendered report's STANCE SUMMARY shows
+`prepare: 1, block: 1`.
+
 ```yaml
 id: invalid-settings
 purpose: Invalid core config blocks dependent inference.
@@ -201,14 +207,32 @@ surfaces:
 evidence:
   structural:
     - JSON parse error with line/column if available
-finding:
-  class: integrity
-  stance: prepare
-allowed_next_step: patch preview or manual edit
-blocked_actions:
-  - infer effective hooks
-  - infer effective MCP
-  - mutate without snapshot
+findings:
+  - id: settings.invalid_json
+    class: integrity
+    stance: prepare
+    allowed_next_step: patch preview or manual edit
+    blocked_actions:
+      - infer effective hooks
+      - infer effective MCP
+      - mutate without snapshot
+  - id: settings.dependent_inference_blocked
+    class: integrity
+    stance: block
+    purpose: |
+      Dependent hook and MCP inference cannot run while settings.json is
+      invalid. Per `docs/protocol-contracts.md` Edge Case 10, claims that
+      depend on the invalid file are blocked, not silently degraded.
+    evidence:
+      structural:
+        - parent settings.json finding has stance prepare and is unresolved
+      missing:
+        - valid settings.json parse
+    allowed_next_step: resolve settings.invalid_json, then re-run inference
+    blocked_actions:
+      - infer effective hooks
+      - infer effective MCP
+      - report hook or MCP findings as authoritative
 ```
 
 ## 8. huge-home-degraded
