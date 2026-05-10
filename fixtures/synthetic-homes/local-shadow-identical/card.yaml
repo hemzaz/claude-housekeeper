@@ -1,0 +1,35 @@
+id: local-shadow-identical
+purpose: |
+  Byte-identical local copy of a plugin command is reviewable; prepare
+  stance only with rollback proof (protocol-contracts.md "Edge Case 8";
+  decision-calculus.md §6).
+mode_expectations:
+  safe:
+    claim_level: finding
+    stance: review
+surfaces:
+  - path: ~/.claude/commands/example.md
+    surfaceClass: authored-config
+    ownerClass: user-owned
+    loadBearingClass: known-load-bearing
+    sensitivityClass: private-path
+    executionClass: inert
+    rollbackClass: snapshot-possible
+    scopeClass: in-scope
+evidence:
+  structural:
+    - local command name matches plugin-provided resource
+    - byte-identical content hash
+  ownership:
+    - plugin source identified
+  missing:
+    - user intent for the local copy
+    - rollback proof required to escalate stance to prepare
+finding:
+  class: contamination
+  stance: review
+allowed_next_step: show source, target, and precedence; await user intent
+blocked_actions:
+  - remove local file
+  - escalate to prepare without rollback proof
+  - claim the local copy is redundant
