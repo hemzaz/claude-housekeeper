@@ -1,0 +1,23 @@
+id: broken-hook-shell-ambiguous
+purpose: Shell ambiguity lowers authority.
+mode_expectations:
+  safe:
+    claim_level: suspicion
+    stance: probe
+surfaces:
+  - path: ~/.claude/settings.json
+    surfaceClass: authored-config
+    executionClass: shell-expansion-risk
+evidence:
+  structural:
+    - hook command contains plugin cache-looking string
+  missing:
+    - shell parse certainty
+    - hook debug trace
+finding:
+  class: integrity
+  stance: probe
+allowed_next_step: live hook debug probe after consent
+blocked_actions:
+  - patch command string
+  - call hook broken
