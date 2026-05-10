@@ -1,0 +1,18 @@
+{
+  "schemaVersion": "0.1",
+  "doNotTouch": [
+    {
+      "path": "~/.env",
+      "reason": "secret-adjacent file at home root; descendants of ~/ inherit sector-boundary",
+      "scope": "user"
+    },
+    {
+      "path": "~/.claude/credentials/**",
+      "reason": "credentials directory; parent recursive inspection becomes parent-contains-boundary",
+      "scope": "user"
+    }
+  ],
+  "allowances": [],
+  "retention": [],
+  "standingConsent": []
+}

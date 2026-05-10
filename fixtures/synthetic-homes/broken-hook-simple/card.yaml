@@ -1,0 +1,32 @@
+id: broken-hook-simple
+purpose: Direct missing hook paths become prepare stance, not cleanup.
+mode_expectations:
+  safe:
+    claim_level: finding
+    stance: prepare
+  live:
+    claim_level: diagnosis
+    stance: prepare
+surfaces:
+  - path: ~/.claude/settings.json
+    surfaceClass: authored-config
+    ownerClass: user-owned
+    loadBearingClass: known-load-bearing
+    sensitivityClass: private-path
+    executionClass: inert
+    rollbackClass: snapshot-possible
+    scopeClass: in-scope
+evidence:
+  structural:
+    - settings parses
+    - hook command contains missing direct absolute plugin cache path
+  missing:
+    - /hooks resolved view
+finding:
+  class: integrity
+  stance: prepare
+allowed_next_step: patch preview
+blocked_actions:
+  - mutate settings
+  - delete plugin cache
+  - claim fixed

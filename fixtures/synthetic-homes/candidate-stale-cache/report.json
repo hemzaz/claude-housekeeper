@@ -1,0 +1,61 @@
+{
+  "schemaVersion": "0.1-pre",
+  "mode": "safe",
+  "home": "<home>",
+  "filesChanged": false,
+  "primary": "plugin.cache_unreferenced",
+  "stanceSummary": {
+    "inform": 0,
+    "watch": 0,
+    "review": 0,
+    "probe": 1,
+    "protect": 0,
+    "prepare": 0,
+    "repair": 0,
+    "block": 0
+  },
+  "findings": [
+    {
+      "id": "plugin.cache_unreferenced",
+      "class": "contamination",
+      "claimLevel": "finding",
+      "stance": "probe",
+      "summary": "plugin cache version is not referenced by known registry evidence",
+      "surface": {
+        "surfaceClass": "claude-app-data",
+        "ownerClass": "claude-managed",
+        "loadBearingClass": "possibly-load-bearing",
+        "sensitivityClass": "private-path",
+        "executionClass": "inert",
+        "rollbackClass": "snapshot-possible",
+        "scopeClass": "in-scope",
+        "confidence": "medium",
+        "limits": ["safe-mode-no-active-session-key"]
+      },
+      "evidence": {
+        "structural": [
+          "installed registry parsed",
+          "version directory is outside known references"
+        ],
+        "loader": [],
+        "behavioral": [],
+        "ownership": [],
+        "freshness": [],
+        "reversibility": [],
+        "missing": [
+          "active session check",
+          "process reference check",
+          "explicit retention policy"
+        ]
+      },
+      "nextAllowedStep": "run freshness probe or review manually",
+      "blockedActions": [
+        "call unused",
+        "delete",
+        "quarantine without Housekeeper rollback proof"
+      ]
+    }
+  ],
+  "boundaries": [],
+  "degraded": []
+}

@@ -1,0 +1,28 @@
+HOUSEKEEPER REPORT
+No files changed.
+
+PRIMARY
+  stance: inform
+  finding: scan budget was reached before project history traversal completed
+  evidence: max files visited budget reached under ~/.claude/projects
+  missing key: full traversal
+  next step: run explicit full scan if project-history findings are needed
+
+STANCE SUMMARY
+  inform   1
+  watch    0
+  review   0
+  probe    0
+  protect  0
+  prepare  0
+  repair   0
+  block    0
+
+SCAN
+  mode: safe
+  degraded: yes
+  skipped: remaining project history after budget
+
+BLOCKED ACTIONS
+  summarize scan as complete
+  propose action from partial project-history evidence

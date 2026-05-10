@@ -1,0 +1,5 @@
+{
+  "name": "syn-tool",
+  "version": "0.9.0",
+  "description": "Synthetic plugin: prior version, candidate for rollback inspection."
+}

@@ -1,0 +1,21 @@
+id: invalid-settings
+purpose: Invalid core config blocks dependent inference.
+mode_expectations:
+  safe:
+    claim_level: finding
+    stance: prepare
+surfaces:
+  - path: ~/.claude/settings.json
+    surfaceClass: authored-config
+    loadBearingClass: known-load-bearing
+evidence:
+  structural:
+    - JSON parse error with line/column if available
+finding:
+  class: integrity
+  stance: prepare
+allowed_next_step: patch preview or manual edit
+blocked_actions:
+  - infer effective hooks
+  - infer effective MCP
+  - mutate without snapshot

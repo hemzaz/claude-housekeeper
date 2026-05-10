@@ -1,0 +1,65 @@
+{
+  "schemaVersion": "0.1-pre",
+  "mode": "safe",
+  "home": "<home>",
+  "filesChanged": false,
+  "primary": "settings.hook_shell_ambiguous",
+  "stanceSummary": {
+    "inform": 0,
+    "watch": 0,
+    "review": 0,
+    "probe": 1,
+    "protect": 0,
+    "prepare": 0,
+    "repair": 0,
+    "block": 0
+  },
+  "findings": [
+    {
+      "id": "settings.hook_shell_ambiguous",
+      "class": "integrity",
+      "claimLevel": "suspicion",
+      "stance": "probe",
+      "summary": "hook command contains a plugin-cache-looking path inside shell syntax",
+      "surface": {
+        "surfaceClass": "authored-config",
+        "ownerClass": "user-owned",
+        "loadBearingClass": "known-load-bearing",
+        "sensitivityClass": "private-path",
+        "executionClass": "shell-expansion-risk",
+        "rollbackClass": "snapshot-possible",
+        "scopeClass": "in-scope",
+        "confidence": "low",
+        "limits": ["safe-mode-no-shell-parse"]
+      },
+      "evidence": {
+        "structural": [
+          "settings parsed",
+          "command string references plugin cache text"
+        ],
+        "loader": [],
+        "behavioral": [],
+        "ownership": [],
+        "freshness": [],
+        "reversibility": [],
+        "missing": [
+          "shell parse certainty",
+          "hook debug trace"
+        ]
+      },
+      "nextAllowedStep": "run a live hook debug probe after consent",
+      "blockedActions": [
+        "patch command string",
+        "call hook broken with certainty",
+        "claim fixed"
+      ],
+      "proposedProbe": {
+        "class": "behavioral",
+        "mayExecute": true,
+        "consent": "high"
+      }
+    }
+  ],
+  "boundaries": [],
+  "degraded": []
+}

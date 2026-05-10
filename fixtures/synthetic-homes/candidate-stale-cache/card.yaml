@@ -1,0 +1,25 @@
+id: candidate-stale-cache
+purpose: Cache outside known references still needs freshness key.
+mode_expectations:
+  safe:
+    claim_level: finding
+    stance: probe
+surfaces:
+  - path: ~/.claude/plugins/cache/syn-market/syn-tool/0.9.0
+    surfaceClass: claude-app-data
+    ownerClass: claude-managed
+    loadBearingClass: possibly-load-bearing
+evidence:
+  structural:
+    - not referenced by known installed registry evidence
+  missing:
+    - active session check
+    - process reference check
+    - explicit retention policy
+finding:
+  class: contamination
+  stance: probe
+allowed_next_step: live freshness probe or manual review
+blocked_actions:
+  - say unused
+  - delete

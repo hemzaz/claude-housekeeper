@@ -1,0 +1,70 @@
+{
+  "schemaVersion": "0.1-pre",
+  "mode": "safe",
+  "home": "<home>",
+  "filesChanged": false,
+  "primary": "policy.protected_path",
+  "stanceSummary": {
+    "inform": 0,
+    "watch": 0,
+    "review": 0,
+    "probe": 0,
+    "protect": 1,
+    "prepare": 0,
+    "repair": 0,
+    "block": 0
+  },
+  "findings": [
+    {
+      "id": "policy.protected_path",
+      "class": "orientation",
+      "claimLevel": "surface",
+      "stance": "protect",
+      "summary": "do-not-touch rules match secret-adjacent paths in both parent and child directions",
+      "surface": {
+        "surfaceClass": "secret-adjacent",
+        "ownerClass": "user-owned",
+        "loadBearingClass": "unknown",
+        "sensitivityClass": "secret-content",
+        "executionClass": "inert",
+        "rollbackClass": "unknown",
+        "scopeClass": "sector-boundary",
+        "confidence": "high",
+        "limits": ["safe-mode-no-content-read"]
+      },
+      "evidence": {
+        "structural": [
+          "do-not-touch rule matched ~/.env",
+          "do-not-touch rule matched ~/.claude/credentials/**"
+        ],
+        "loader": [],
+        "behavioral": [],
+        "ownership": [],
+        "freshness": [],
+        "reversibility": [],
+        "missing": []
+      },
+      "nextAllowedStep": "none",
+      "blockedActions": [
+        "read secret file",
+        "print secret value",
+        "propose cleanup"
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "path": "~/.env",
+      "scopeClass": "sector-boundary",
+      "reason": "secret-adjacent file at home root",
+      "ruleSource": "doNotTouch"
+    },
+    {
+      "path": "~/.claude/credentials",
+      "scopeClass": "parent-contains-boundary",
+      "reason": "credentials directory; parent recursive inspection blocked",
+      "ruleSource": "doNotTouch"
+    }
+  ],
+  "degraded": []
+}

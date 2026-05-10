@@ -1,0 +1,64 @@
+{
+  "schemaVersion": "0.1-pre",
+  "mode": "safe",
+  "home": "<home>",
+  "filesChanged": false,
+  "primary": "settings.invalid_json",
+  "stanceSummary": {
+    "inform": 0,
+    "watch": 0,
+    "review": 0,
+    "probe": 0,
+    "protect": 0,
+    "prepare": 1,
+    "repair": 0,
+    "block": 1
+  },
+  "findings": [
+    {
+      "id": "settings.invalid_json",
+      "class": "integrity",
+      "claimLevel": "finding",
+      "stance": "prepare",
+      "summary": "settings.json is invalid JSON",
+      "surface": {
+        "surfaceClass": "authored-config",
+        "ownerClass": "user-owned",
+        "loadBearingClass": "known-load-bearing",
+        "sensitivityClass": "private-path",
+        "executionClass": "inert",
+        "rollbackClass": "snapshot-possible",
+        "scopeClass": "in-scope",
+        "confidence": "high",
+        "limits": []
+      },
+      "evidence": {
+        "structural": [
+          "parser returned line and column for the invalid token"
+        ],
+        "loader": [],
+        "behavioral": [],
+        "ownership": [],
+        "freshness": [],
+        "reversibility": [],
+        "missing": [
+          "valid settings required before hook or MCP inference"
+        ]
+      },
+      "nextAllowedStep": "generate patch preview or edit manually",
+      "blockedActions": [
+        "infer effective hooks",
+        "infer effective MCP",
+        "mutate without snapshot"
+      ]
+    }
+  ],
+  "boundaries": [],
+  "degraded": [
+    {
+      "scope": "dependent-inference",
+      "reason": "settings.json invalid JSON; hook and MCP inference skipped",
+      "skipped": ["hook inference", "MCP inference"]
+    }
+  ]
+}

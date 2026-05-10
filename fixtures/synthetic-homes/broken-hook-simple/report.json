@@ -1,0 +1,60 @@
+{
+  "schemaVersion": "0.1-pre",
+  "mode": "safe",
+  "home": "<home>",
+  "filesChanged": false,
+  "primary": "settings.hook_path_dangling",
+  "stanceSummary": {
+    "inform": 0,
+    "watch": 0,
+    "review": 0,
+    "probe": 0,
+    "protect": 0,
+    "prepare": 1,
+    "repair": 0,
+    "block": 0
+  },
+  "findings": [
+    {
+      "id": "settings.hook_path_dangling",
+      "class": "integrity",
+      "claimLevel": "finding",
+      "stance": "prepare",
+      "summary": "settings hook references a missing direct executable path",
+      "surface": {
+        "surfaceClass": "authored-config",
+        "ownerClass": "user-owned",
+        "loadBearingClass": "known-load-bearing",
+        "sensitivityClass": "private-path",
+        "executionClass": "inert",
+        "rollbackClass": "snapshot-possible",
+        "scopeClass": "in-scope",
+        "confidence": "medium",
+        "limits": ["safe-mode-no-loader-key"]
+      },
+      "evidence": {
+        "structural": [
+          "settings parsed",
+          "hook command contains an absolute path that does not exist"
+        ],
+        "loader": [],
+        "behavioral": [],
+        "ownership": [],
+        "freshness": [],
+        "reversibility": [],
+        "missing": [
+          "live /hooks view",
+          "hook verification"
+        ]
+      },
+      "nextAllowedStep": "patch preview",
+      "blockedActions": [
+        "mutate settings",
+        "delete plugin cache",
+        "claim fixed"
+      ]
+    }
+  ],
+  "boundaries": [],
+  "degraded": []
+}

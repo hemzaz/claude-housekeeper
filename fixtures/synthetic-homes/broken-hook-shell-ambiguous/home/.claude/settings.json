@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -lc 'eval $(cat /Users/syn-user/.claude/plugins/cache/syn-market/syn-tool/0.9.0/hook.sh)'"
+          }
+        ]
+      }
+    ]
+  }
+}

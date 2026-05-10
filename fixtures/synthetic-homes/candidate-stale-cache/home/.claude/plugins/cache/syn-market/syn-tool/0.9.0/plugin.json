@@ -1,0 +1,5 @@
+{
+  "name": "syn-tool",
+  "version": "0.9.0",
+  "description": "Synthetic plugin: long-stale prior cache, well outside grace."
+}

@@ -1,0 +1,57 @@
+{
+  "schemaVersion": "0.1-pre",
+  "mode": "safe",
+  "home": "<home>",
+  "filesChanged": false,
+  "primary": "plugin.expected_orphan",
+  "stanceSummary": {
+    "inform": 0,
+    "watch": 1,
+    "review": 0,
+    "probe": 0,
+    "protect": 0,
+    "prepare": 0,
+    "repair": 0,
+    "block": 0
+  },
+  "findings": [
+    {
+      "id": "plugin.expected_orphan",
+      "class": "hygiene",
+      "claimLevel": "finding",
+      "stance": "watch",
+      "summary": "old plugin cache version appears to be an expected orphan",
+      "surface": {
+        "surfaceClass": "claude-app-data",
+        "ownerClass": "claude-managed",
+        "loadBearingClass": "possibly-load-bearing",
+        "sensitivityClass": "private-path",
+        "executionClass": "inert",
+        "rollbackClass": "snapshot-possible",
+        "scopeClass": "in-scope",
+        "confidence": "medium",
+        "limits": ["safe-mode-no-active-session-key"]
+      },
+      "evidence": {
+        "structural": [
+          "version is not referenced by known installed registry evidence",
+          "orphan age is inside documented grace evidence"
+        ],
+        "loader": [],
+        "behavioral": [],
+        "ownership": [],
+        "freshness": [],
+        "reversibility": [],
+        "missing": ["live active-session reference check"]
+      },
+      "nextAllowedStep": "none",
+      "blockedActions": [
+        "call unused",
+        "quarantine",
+        "delete"
+      ]
+    }
+  ],
+  "boundaries": [],
+  "degraded": []
+}

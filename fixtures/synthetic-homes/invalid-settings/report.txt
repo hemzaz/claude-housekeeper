@@ -1,0 +1,29 @@
+HOUSEKEEPER REPORT
+No files changed.
+
+PRIMARY
+  stance: prepare
+  finding: settings.json is invalid JSON
+  evidence: parser returned line and column for the invalid token
+  missing key: valid settings required before hook or MCP inference
+  next step: generate patch preview or edit manually
+
+STANCE SUMMARY
+  inform   0
+  watch    0
+  review   0
+  probe    0
+  protect  0
+  prepare  1
+  repair   0
+  block    1
+
+BOUNDARIES
+  protected: 0
+  sector-boundary: 0
+  secret-adjacent skipped: 0
+
+SCAN
+  mode: safe
+  degraded: yes
+  skipped: dependent hook and MCP inference

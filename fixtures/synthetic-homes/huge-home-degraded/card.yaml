@@ -1,0 +1,21 @@
+id: huge-home-degraded
+purpose: Scan budgets weaken claims instead of hiding failure.
+mode_expectations:
+  safe:
+    claim_level: observation
+    stance: inform
+surfaces:
+  - path: ~/.claude/projects
+    surfaceClass: claude-app-data
+evidence:
+  structural:
+    - scan budget hit
+  missing:
+    - full traversal
+finding:
+  class: orientation
+  stance: inform
+allowed_next_step: explicit full scan
+blocked_actions:
+  - summarize as complete
+  - propose cleanup from partial data
