@@ -33,8 +33,8 @@ const SECRET_NAME_PATTERNS = [
  */
 export function classifySurface(targetPath, hints = {}) {
   const p = String(targetPath || "");
-  const home = hints.home ? path.normalize(hints.home) : null;
-  const norm = path.normalize(p);
+  const home = hints.home ? stripTrailingSep(path.normalize(hints.home)) : null;
+  const norm = stripTrailingSep(path.normalize(p));
   const base = path.basename(norm);
 
   // 1. Housekeeper-owned operation manifest.
@@ -167,6 +167,11 @@ export function classifySurface(targetPath, hints = {}) {
 
   // 8. Unknown.
   return makeSurfaceClassification();
+}
+
+function stripTrailingSep(p) {
+  if (p.length <= 1) return p;
+  return p.endsWith(path.sep) ? p.slice(0, -1) : p;
 }
 
 function segmentsContain(p, segs) {

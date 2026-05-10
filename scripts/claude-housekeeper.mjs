@@ -25,7 +25,7 @@ function parseArgs(argv) {
     safe: false,
     redact: false,
     scope: "all",
-    home: process.env.CLAUDE_HOME || path.join(homedir(), ".claude"),
+    home: process.env.CLAUDE_HOME || homedir(),
     configPath: null,
     rollbackId: null,
     scanLimits: null
@@ -48,6 +48,12 @@ function parseArgs(argv) {
   }
 
   return options;
+}
+
+function resolveClaudeHome(input) {
+  const normalized = path.normalize(input);
+  if (path.basename(normalized) === ".claude") return normalized;
+  return path.join(normalized, ".claude");
 }
 
 // T-X12: JSON `mode` is required and takes the active runtime mode.
@@ -212,6 +218,7 @@ function printVerify(probes) {
 
 try {
   const options = parseArgs(process.argv.slice(2));
+  options.home = resolveClaudeHome(options.home);
   if (!existsSync(options.home)) {
     fail(`Claude home does not exist: ${options.home}`, 2);
   } else if (options.command === "diagnose") runDiagnose(options);
