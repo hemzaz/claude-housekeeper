@@ -1,0 +1,24 @@
+HOUSEKEEPER REPORT
+No files changed.
+
+PRIMARY
+  stance: block
+  finding: Housekeeper operation manifest is incomplete
+  evidence: operation id exists; manifest lacks completed verification record
+  missing key: recovery decision for interrupted operation
+  next step: inspect operation record and choose recover, archive, or discard
+
+STANCE SUMMARY
+  inform   0
+  watch    0
+  review   0
+  probe    0
+  protect  0
+  prepare  0
+  repair   0
+  block    1
+
+BLOCKED ACTIONS
+  start new mutation operation
+  overwrite operation manifest
+  hide Housekeeper self-failure

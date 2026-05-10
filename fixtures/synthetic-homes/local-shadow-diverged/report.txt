@@ -1,0 +1,34 @@
+HOUSEKEEPER REPORT
+No files changed.
+
+PRIMARY
+  stance: review
+  finding: a local command file shares a name with a plugin-provided command but content bytes differ
+  evidence: local command name matches plugin-provided resource; content bytes differ from plugin source
+  missing key: user intent for the divergence
+  next step: decide whether this is intentional before planning changes
+
+STANCE SUMMARY
+  inform   0
+  watch    0
+  review   1
+  probe    0
+  protect  0
+  prepare  0
+  repair   0
+  block    0
+
+BOUNDARIES
+  protected: 0
+  sector-boundary: 0
+  secret-adjacent skipped: 0
+
+SCAN
+  mode: safe
+  degraded: no
+  skipped: live /skills precedence probe
+
+BLOCKED ACTIONS
+  overwrite local edits
+  propose syncing the local file to plugin source
+  escalate to prepare or repair

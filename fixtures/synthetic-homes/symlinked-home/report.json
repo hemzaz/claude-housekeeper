@@ -1,0 +1,69 @@
+{
+  "schemaVersion": "0.1-pre",
+  "mode": "safe",
+  "home": "<home>",
+  "filesChanged": false,
+  "primary": "scope.symlink_unresolved",
+  "stanceSummary": {
+    "inform": 0,
+    "watch": 0,
+    "review": 1,
+    "probe": 0,
+    "protect": 0,
+    "prepare": 0,
+    "repair": 0,
+    "block": 0
+  },
+  "findings": [
+    {
+      "id": "scope.symlink_unresolved",
+      "class": "orientation",
+      "claimLevel": "surface",
+      "stance": "review",
+      "summary": "a symlink under ~/.claude resolves outside the observed home root",
+      "surface": {
+        "surfaceClass": "unknown",
+        "ownerClass": "unknown",
+        "loadBearingClass": "unknown",
+        "sensitivityClass": "private-path",
+        "executionClass": "inert",
+        "rollbackClass": "unknown",
+        "scopeClass": "parent-contains-boundary",
+        "confidence": "medium",
+        "limits": ["safe-mode-no-symlink-traversal"]
+      },
+      "evidence": {
+        "structural": [
+          "path is a symlink",
+          "observed and resolved paths differ"
+        ],
+        "loader": [],
+        "behavioral": [],
+        "ownership": [
+          "resolved target ownership unknown"
+        ],
+        "freshness": [],
+        "reversibility": [],
+        "missing": [
+          "canonical target identity",
+          "traversal consent for resolved target"
+        ]
+      },
+      "nextAllowedStep": "report observed and resolved paths; request explicit traversal scope",
+      "blockedActions": [
+        "traverse resolved target by default",
+        "mutate through symlink",
+        "infer scope from link name alone"
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "path": "~/.claude/commands/local-build.md",
+      "scopeClass": "parent-contains-boundary",
+      "reason": "symlink target resolves outside observed home root",
+      "ruleSource": "scope-classifier"
+    }
+  ],
+  "degraded": []
+}

@@ -1,0 +1,65 @@
+{
+  "schemaVersion": "0.1-pre",
+  "mode": "safe",
+  "home": "<home>",
+  "filesChanged": false,
+  "primary": "settings.secret_command_fragment",
+  "stanceSummary": {
+    "inform": 0,
+    "watch": 0,
+    "review": 0,
+    "probe": 0,
+    "protect": 1,
+    "prepare": 0,
+    "repair": 0,
+    "block": 0
+  },
+  "findings": [
+    {
+      "id": "settings.secret_command_fragment",
+      "class": "orientation",
+      "claimLevel": "surface",
+      "stance": "protect",
+      "summary": "a hook command string contains a token-like env fragment",
+      "surface": {
+        "surfaceClass": "secret-adjacent",
+        "ownerClass": "user-owned",
+        "loadBearingClass": "known-load-bearing",
+        "sensitivityClass": "secret-content",
+        "executionClass": "shell-expansion-risk",
+        "rollbackClass": "snapshot-possible",
+        "scopeClass": "sector-boundary",
+        "confidence": "high",
+        "limits": ["safe-mode-redacted-render"]
+      },
+      "evidence": {
+        "structural": [
+          "command string parsed",
+          "token-like pattern matched inside command",
+          "command rendered as: ANTHROPIC_API_KEY=<redacted> /usr/local/bin/syn-notify"
+        ],
+        "loader": [],
+        "behavioral": [],
+        "ownership": [],
+        "freshness": [],
+        "reversibility": [],
+        "missing": []
+      },
+      "nextAllowedStep": "render the command with token fragments replaced by redaction placeholders",
+      "blockedActions": [
+        "print the command raw",
+        "omit the command string entirely from the report",
+        "copy the token fragment into evidence or logs"
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "path": "~/.claude/settings.json",
+      "scopeClass": "sector-boundary",
+      "reason": "hook command contains a token-like env fragment",
+      "ruleSource": "redaction-classifier"
+    }
+  ],
+  "degraded": []
+}

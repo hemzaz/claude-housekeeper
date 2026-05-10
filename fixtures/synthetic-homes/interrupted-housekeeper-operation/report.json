@@ -1,0 +1,59 @@
+{
+  "schemaVersion": "0.1-pre",
+  "mode": "safe",
+  "home": "<home>",
+  "filesChanged": false,
+  "primary": "housekeeper.interrupted_operation",
+  "stanceSummary": {
+    "inform": 0,
+    "watch": 0,
+    "review": 0,
+    "probe": 0,
+    "protect": 0,
+    "prepare": 0,
+    "repair": 0,
+    "block": 1
+  },
+  "findings": [
+    {
+      "id": "housekeeper.interrupted_operation",
+      "class": "hygiene",
+      "claimLevel": "finding",
+      "stance": "block",
+      "summary": "Housekeeper operation manifest is incomplete",
+      "surface": {
+        "surfaceClass": "housekeeper-owned",
+        "ownerClass": "housekeeper-owned",
+        "loadBearingClass": "not-load-bearing",
+        "sensitivityClass": "private-path",
+        "executionClass": "inert",
+        "rollbackClass": "manifest-backed",
+        "scopeClass": "in-scope",
+        "confidence": "high",
+        "limits": []
+      },
+      "evidence": {
+        "structural": [
+          "operation id exists",
+          "manifest lacks completed verification record"
+        ],
+        "loader": [],
+        "behavioral": [],
+        "ownership": [],
+        "freshness": [],
+        "reversibility": [],
+        "missing": [
+          "recovery decision for interrupted operation"
+        ]
+      },
+      "nextAllowedStep": "inspect operation record and choose recover, archive, or discard",
+      "blockedActions": [
+        "start new mutation operation",
+        "overwrite operation manifest",
+        "hide Housekeeper self-failure"
+      ]
+    }
+  ],
+  "boundaries": [],
+  "degraded": []
+}

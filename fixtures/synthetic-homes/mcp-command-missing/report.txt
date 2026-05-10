@@ -1,0 +1,34 @@
+HOUSEKEEPER REPORT
+No files changed.
+
+PRIMARY
+  stance: prepare
+  finding: MCP server config references a missing direct executable path
+  evidence: MCP config parsed; server command contains an absolute path that does not exist
+  missing key: live /mcp status and startup consent
+  next step: generate a patch preview only
+
+STANCE SUMMARY
+  inform   0
+  watch    0
+  review   0
+  probe    0
+  protect  0
+  prepare  1
+  repair   0
+  block    0
+
+BOUNDARIES
+  protected: 0
+  sector-boundary: 0
+  secret-adjacent skipped: 0
+
+SCAN
+  mode: safe
+  degraded: no
+  skipped: MCP server startup, Claude /mcp probe
+
+BLOCKED ACTIONS
+  start the MCP server
+  edit .mcp.json without consent
+  claim the server is broken before live status is checked

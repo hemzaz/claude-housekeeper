@@ -1,0 +1,42 @@
+id: duplicate-scope-plugin
+purpose: |
+  Same plugin enabled at user and project scope is reviewable, not
+  automatically wrong (loader-semantics.md §1; protocol-contracts.md
+  "Edge Case 7").
+mode_expectations:
+  safe:
+    claim_level: finding
+    stance: review
+surfaces:
+  - path: ~/.claude/settings.json
+    surfaceClass: authored-config
+    ownerClass: user-owned
+    loadBearingClass: known-load-bearing
+    sensitivityClass: private-path
+    executionClass: inert
+    rollbackClass: snapshot-possible
+    scopeClass: in-scope
+  - path: .claude/settings.json
+    surfaceClass: authored-config
+    ownerClass: project-owned
+    loadBearingClass: known-load-bearing
+    sensitivityClass: private-path
+    executionClass: inert
+    rollbackClass: snapshot-possible
+    scopeClass: in-scope
+evidence:
+  structural:
+    - same plugin name registered at user and project scope
+  loader:
+    - documented precedence places project above user
+  missing:
+    - effective precedence in current session
+    - user intent for second registration
+finding:
+  class: integrity
+  stance: review
+allowed_next_step: show both registrations and documented precedence; do not deduplicate
+blocked_actions:
+  - remove one scope
+  - infer one registration is orphaned
+  - mutate either settings file

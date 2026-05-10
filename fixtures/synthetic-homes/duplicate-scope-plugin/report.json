@@ -1,0 +1,63 @@
+{
+  "schemaVersion": "0.1-pre",
+  "mode": "safe",
+  "home": "<home>",
+  "filesChanged": false,
+  "primary": "plugin.duplicate_registration",
+  "stanceSummary": {
+    "inform": 0,
+    "watch": 0,
+    "review": 1,
+    "probe": 0,
+    "protect": 0,
+    "prepare": 0,
+    "repair": 0,
+    "block": 0
+  },
+  "findings": [
+    {
+      "id": "plugin.duplicate_registration",
+      "class": "integrity",
+      "claimLevel": "finding",
+      "stance": "review",
+      "summary": "same plugin appears registered at both user and project scope",
+      "surface": {
+        "surfaceClass": "authored-config",
+        "ownerClass": "user-owned",
+        "loadBearingClass": "known-load-bearing",
+        "sensitivityClass": "private-path",
+        "executionClass": "inert",
+        "rollbackClass": "snapshot-possible",
+        "scopeClass": "in-scope",
+        "confidence": "medium",
+        "limits": ["safe-mode-no-loader-key"]
+      },
+      "evidence": {
+        "structural": [
+          "user settings parsed",
+          "project settings parsed",
+          "both list the same plugin name"
+        ],
+        "loader": [
+          "documented precedence places project above user"
+        ],
+        "behavioral": [],
+        "ownership": [],
+        "freshness": [],
+        "reversibility": [],
+        "missing": [
+          "effective precedence in current session",
+          "user intent for second registration"
+        ]
+      },
+      "nextAllowedStep": "show both registrations and documented precedence; do not deduplicate",
+      "blockedActions": [
+        "remove one scope",
+        "infer one registration is orphaned",
+        "mutate either settings file"
+      ]
+    }
+  ],
+  "boundaries": [],
+  "degraded": []
+}

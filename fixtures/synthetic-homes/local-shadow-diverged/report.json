@@ -1,0 +1,61 @@
+{
+  "schemaVersion": "0.1-pre",
+  "mode": "safe",
+  "home": "<home>",
+  "filesChanged": false,
+  "primary": "registry.local_command_diverged",
+  "stanceSummary": {
+    "inform": 0,
+    "watch": 0,
+    "review": 1,
+    "probe": 0,
+    "protect": 0,
+    "prepare": 0,
+    "repair": 0,
+    "block": 0
+  },
+  "findings": [
+    {
+      "id": "registry.local_command_diverged",
+      "class": "contamination",
+      "claimLevel": "finding",
+      "stance": "review",
+      "summary": "a local command file shares a name with a plugin-provided command but content bytes differ",
+      "surface": {
+        "surfaceClass": "authored-config",
+        "ownerClass": "user-owned",
+        "loadBearingClass": "known-load-bearing",
+        "sensitivityClass": "private-path",
+        "executionClass": "inert",
+        "rollbackClass": "snapshot-possible",
+        "scopeClass": "in-scope",
+        "confidence": "high",
+        "limits": ["safe-mode-no-loader-key"]
+      },
+      "evidence": {
+        "structural": [
+          "local command name matches plugin-provided resource",
+          "content bytes differ from plugin source"
+        ],
+        "loader": [],
+        "behavioral": [],
+        "ownership": [
+          "plugin source identified"
+        ],
+        "freshness": [],
+        "reversibility": [],
+        "missing": [
+          "user intent for the divergence"
+        ]
+      },
+      "nextAllowedStep": "show both versions and let the user decide",
+      "blockedActions": [
+        "overwrite local edits",
+        "propose syncing the local file to plugin source",
+        "escalate to prepare or repair"
+      ]
+    }
+  ],
+  "boundaries": [],
+  "degraded": []
+}

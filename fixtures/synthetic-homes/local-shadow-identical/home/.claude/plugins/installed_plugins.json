@@ -1,0 +1,10 @@
+{
+  "plugins": [
+    {
+      "name": "syn-tool",
+      "marketplace": "syn-market",
+      "version": "1.0.0",
+      "enabled": true
+    }
+  ]
+}
