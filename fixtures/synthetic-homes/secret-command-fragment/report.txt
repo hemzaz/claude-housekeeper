@@ -33,3 +33,8 @@ BLOCKED ACTIONS
   print the command raw
   omit the command string entirely from the report
   copy the token fragment into evidence or logs
+
+SCAN
+  mode: safe
+  degraded: no
+  skipped: live Claude probes

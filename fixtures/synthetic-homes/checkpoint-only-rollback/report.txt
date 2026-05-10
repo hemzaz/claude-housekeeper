@@ -23,3 +23,8 @@ BLOCKED
   reason: rollback proof is checkpoint-only
   allowed now: report
   not allowed: mutate
+
+SCAN
+  mode: safe
+  degraded: no
+  skipped: live Claude probes
