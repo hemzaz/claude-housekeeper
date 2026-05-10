@@ -1,0 +1,20 @@
+{
+  "name": "claude-housekeeper",
+  "version": "0.1.0",
+  "description": "Read-only Claude Code home inspection for broken hooks, plugin cache drift, protected state, and missing evidence keys.",
+  "author": {
+    "name": "Elad"
+  },
+  "homepage": "https://github.com/hemzaz/claude-housekeeper",
+  "repository": "https://github.com/hemzaz/claude-housekeeper",
+  "license": "MIT",
+  "keywords": [
+    "claude-code",
+    "plugins",
+    "diagnostics",
+    "housekeeping"
+  ],
+  "commands": [
+    "./commands/"
+  ]
+}

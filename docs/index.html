@@ -1,0 +1,347 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Claude Housekeeper</title>
+    <meta name="description" content="A safe Claude Code home inspector for broken hooks, plugin cache drift, and protected local state.">
+    <style>
+      :root {
+        color-scheme: light;
+        --ink: #17201a;
+        --muted: #5c665f;
+        --line: #d9ded8;
+        --panel: #f7f8f5;
+        --accent: #176b5d;
+        --accent-2: #8d3f21;
+        --code: #111814;
+        --code-bg: #edf1ed;
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        background: #fbfcf9;
+        color: var(--ink);
+        line-height: 1.55;
+      }
+
+      header,
+      main,
+      footer {
+        width: min(1080px, calc(100% - 32px));
+        margin: 0 auto;
+      }
+
+      header {
+        min-height: 86vh;
+        display: grid;
+        align-content: center;
+        gap: 28px;
+        padding: 56px 0 32px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      nav {
+        position: absolute;
+        top: 20px;
+        left: 50%;
+        width: min(1080px, calc(100% - 32px));
+        transform: translateX(-50%);
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        font-size: 14px;
+      }
+
+      nav a {
+        color: var(--accent);
+        text-decoration: none;
+        font-weight: 650;
+      }
+
+      h1 {
+        margin: 0;
+        max-width: 820px;
+        font-size: clamp(44px, 8vw, 92px);
+        line-height: 0.96;
+        letter-spacing: 0;
+      }
+
+      .lede {
+        max-width: 740px;
+        margin: 0;
+        color: var(--muted);
+        font-size: 21px;
+      }
+
+      .commands {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+      }
+
+      code,
+      pre {
+        font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      }
+
+      .commands code {
+        display: inline-block;
+        padding: 8px 10px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: var(--code-bg);
+        color: var(--code);
+        font-size: 14px;
+      }
+
+      section {
+        padding: 44px 0;
+        border-bottom: 1px solid var(--line);
+      }
+
+      h2 {
+        margin: 0 0 18px;
+        font-size: 28px;
+        letter-spacing: 0;
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 18px;
+      }
+
+      .item {
+        border-left: 3px solid var(--accent);
+        padding-left: 14px;
+      }
+
+      .item strong {
+        display: block;
+        margin-bottom: 4px;
+      }
+
+      .item span,
+      p {
+        color: var(--muted);
+      }
+
+      pre {
+        overflow-x: auto;
+        margin: 0;
+        padding: 18px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #111814;
+        color: #f4f7f1;
+        font-size: 14px;
+      }
+
+      .status {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 20px;
+      }
+
+      ul {
+        margin: 0;
+        padding-left: 20px;
+        color: var(--muted);
+      }
+
+      li + li {
+        margin-top: 8px;
+      }
+
+      footer {
+        padding: 32px 0 48px;
+        color: var(--muted);
+        font-size: 14px;
+      }
+
+      @media (max-width: 760px) {
+        header {
+          min-height: 78vh;
+        }
+
+        .grid,
+        .status {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <nav>
+      <strong>Claude Housekeeper</strong>
+      <a href="https://github.com/hemzaz/claude-housekeeper">GitHub</a>
+    </nav>
+
+    <header>
+      <h1>Claude Housekeeper</h1>
+      <p class="lede">A safe Claude Code home inspector. It shows what is known, what is missing, what is protected, and what is blocked before anything changes.</p>
+      <div class="commands" aria-label="Commands">
+        <code>claude-housekeeper diagnose</code>
+        <code>claude-housekeeper plan</code>
+        <code>No files changed</code>
+        <code>protected by rule</code>
+      </div>
+    </header>
+
+    <main>
+      <section>
+        <h2>The Report</h2>
+        <pre>HOUSEKEEPER REPORT
+No files changed.
+
+PRIMARY
+  stance: probe
+  finding: old plugin cache version may still be live
+  evidence: not referenced by installed registry; inside plugin cache
+  missing key: active-session or orphan-grace evidence
+  next step: run a live freshness probe after consent
+
+STANCE SUMMARY
+  inform   2
+  watch    1
+  review   0
+  probe    1
+  protect  1
+  prepare  0
+  repair   0
+  block    0</pre>
+      </section>
+
+      <section>
+        <h2>Install</h2>
+        <pre>git clone https://github.com/hemzaz/claude-housekeeper.git
+cd claude-housekeeper
+node scripts/claude-housekeeper.mjs diagnose
+node scripts/claude-housekeeper.mjs plan --scope=registry</pre>
+      </section>
+
+      <section>
+        <h2>First Wedge</h2>
+        <div class="grid">
+          <div class="item">
+            <strong>Broken Hooks</strong>
+            <span>Find direct missing hook paths without executing hooks or editing settings.</span>
+          </div>
+          <div class="item">
+            <strong>Plugin Cache Drift</strong>
+            <span>Separate expected orphans from candidate stale cache and mark missing freshness keys.</span>
+          </div>
+          <div class="item">
+            <strong>Protected Local State</strong>
+            <span>Keep do-not-touch paths visible, explained, and excluded from action.</span>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <h2>Safety Model</h2>
+        <div class="grid">
+          <div class="item">
+            <strong>Surface first</strong>
+            <span>Housekeeper classifies what kind of thing it is before judging what is wrong.</span>
+          </div>
+          <div class="item">
+            <strong>Evidence before stance</strong>
+            <span>Findings say what is known, what is missing, and what claim level is supported.</span>
+          </div>
+          <div class="item">
+            <strong>Rollback is not a checkpoint</strong>
+            <span>Claude checkpoints are context only. Cleanup needs Housekeeper-owned rollback proof.</span>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <h2>Do Not Touch</h2>
+        <p>Protected rules are treated as a hard boundary. Housekeeper can still report a protected item, but it becomes non-actionable and future cleanup code must skip it.</p>
+        <pre>{
+  "doNotTouch": [
+    {
+      "path": "commands/net-cables.md",
+      "reason": "hand-maintained local command"
+    },
+    {
+      "path": "skills/jewelry-box/**",
+      "reason": "private local skill experiments"
+    }
+  ]
+}</pre>
+      </section>
+
+      <section>
+        <h2>Stances</h2>
+        <p>Housekeeper reports posture before action. A severe finding can still be blocked. A high-confidence finding can still be protected.</p>
+        <pre>inform   useful context, no action
+watch    not urgent, may matter later
+review   user intent matters
+probe    live key required
+protect  boundary or do-not-touch
+prepare  plan can be drafted
+repair   only after consent, snapshot, verification
+block    not allowed under current evidence</pre>
+      </section>
+
+      <section>
+        <h2>Status</h2>
+        <div class="status">
+          <div>
+            <strong>Available Now</strong>
+            <ul>
+              <li>Read-only diagnose and plan</li>
+              <li>Framework docs for surface classification, evidence keys, and stances</li>
+              <li>First wedge cutline for broken hooks and plugin cache drift</li>
+              <li>Claude plugin command wrapper</li>
+              <li>Node CLI and fixture tests for the current broad scanner</li>
+            </ul>
+          </div>
+          <div>
+            <strong>Next</strong>
+            <ul>
+              <li>Align CLI output with stance-first report grammar</li>
+              <li>Add first-wedge acceptance fixtures</li>
+              <li>Prove loader semantics before mutation</li>
+              <li>Only then design snapshot-backed clean, quarantine, and rollback</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <h2>Boundaries</h2>
+        <div class="grid">
+          <div class="item">
+            <strong>Protected</strong>
+            <span>User-declared do-not-touch paths remain visible but non-actionable.</span>
+          </div>
+          <div class="item">
+            <strong>Probe Required</strong>
+            <span>Safe mode cannot claim live behavior; loader and behavioral keys need consent.</span>
+          </div>
+          <div class="item">
+            <strong>Blocked</strong>
+            <span>Unknown ownership, missing rollback proof, or checkpoint-only rollback stops action.</span>
+          </div>
+          <div class="item">
+            <strong>No Files Changed</strong>
+            <span>The first wedge is diagnostic. Mutation waits for explicit implementation approval and rollback proof.</span>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      MIT licensed. Built for operators who want Claude maintenance to be inspectable before it is automatic.
+    </footer>
+  </body>
+</html>

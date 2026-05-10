@@ -1,0 +1,19 @@
+node_modules/
+.DS_Store
+.omc/
+coverage/
+dist/
+*.tgz
+
+# Secrets and environment
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+
+# Editor / OS
+.idea/
+.vscode/
+*.swp

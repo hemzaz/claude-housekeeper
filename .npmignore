@@ -1,0 +1,6 @@
+.omc/
+.git/
+node_modules/
+coverage/
+dist/
+*.tgz

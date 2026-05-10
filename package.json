@@ -1,0 +1,41 @@
+{
+  "name": "claude-housekeeper",
+  "version": "0.1.0",
+  "description": "Read-only diagnostics and safety rails for Claude Code plugin, registry, state, settings, and log hygiene.",
+  "type": "module",
+  "homepage": "https://hemzaz.github.io/claude-housekeeper/",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/hemzaz/claude-housekeeper.git"
+  },
+  "bugs": {
+    "url": "https://github.com/hemzaz/claude-housekeeper/issues"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "files": [
+    ".claude-plugin/",
+    "commands/",
+    "scripts/",
+    "README.md",
+    "LICENSE"
+  ],
+  "bin": {
+    "claude-housekeeper": "./scripts/claude-housekeeper.mjs"
+  },
+  "scripts": {
+    "test": "node --test",
+    "lint": "node --check scripts/claude-housekeeper.mjs && node --check scripts/lib/audit.mjs && node --check scripts/format-check.mjs && node --check test/audit.test.mjs",
+    "format": "node scripts/format-check.mjs"
+  },
+  "keywords": [
+    "claude-code",
+    "claude-plugin",
+    "housekeeping",
+    "diagnostics",
+    "registry",
+    "hooks"
+  ],
+  "license": "MIT"
+}
