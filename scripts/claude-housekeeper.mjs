@@ -23,6 +23,7 @@ function parseArgs(argv) {
     json: false,
     confirm: false,
     safe: false,
+    redact: false,
     scope: "all",
     home: process.env.CLAUDE_HOME || path.join(homedir(), ".claude"),
     configPath: null,
@@ -34,6 +35,7 @@ function parseArgs(argv) {
     if (arg === "--json") options.json = true;
     else if (arg === "--confirm") options.confirm = true;
     else if (arg === "--safe") options.safe = true;
+    else if (arg === "--redact") options.redact = true;
     else if (arg.startsWith("--scope=")) options.scope = arg.slice("--scope=".length);
     else if (arg.startsWith("--home=")) options.home = arg.slice("--home=".length);
     else if (arg.startsWith("--config=")) options.configPath = arg.slice("--config=".length);
@@ -73,8 +75,9 @@ function runDiagnose(options) {
     mode,
     scanLimits: options.scanLimits
   });
-  if (options.json) printJson(renderJsonReport(report));
-  else console.log(renderHumanReport(report));
+  const renderOpts = { redact: options.redact, home: options.home };
+  if (options.json) printJson(renderJsonReport(report, renderOpts));
+  else console.log(renderHumanReport(report, renderOpts));
   // Exit non-zero only if the report carries any block findings.
   process.exitCode = (report.stanceSummary?.block || 0) > 0 ? 1 : 0;
 }
@@ -87,8 +90,9 @@ function runPlan(options) {
     mode,
     scanLimits: options.scanLimits
   });
-  if (options.json) printJson(renderJsonReport(report));
-  else console.log(renderPlanReport(report));
+  const renderOpts = { redact: options.redact, home: options.home };
+  if (options.json) printJson(renderJsonReport(report, renderOpts));
+  else console.log(renderPlanReport(report, renderOpts));
 }
 
 function runClean(options) {
@@ -99,8 +103,9 @@ function runClean(options) {
     mode,
     scanLimits: options.scanLimits
   });
+  const renderOpts = { redact: options.redact, home: options.home };
   if (!options.confirm) {
-    console.log(renderPlanReport(report));
+    console.log(renderPlanReport(report, renderOpts));
     fail("\nNo files were changed. clean is planned, but this version is read-only.", 2);
     return;
   }

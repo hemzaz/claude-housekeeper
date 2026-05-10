@@ -5,6 +5,10 @@
 // T-206: plan rendering re-uses the renderer in mode "plan".
 // T-209: `mode` is preserved as a top-level JSON field.
 // T-210: `proposedProbe` is forwarded into the JSON when present.
+// T-408: `--redact` mode and per-finding sensitivityClass-driven redaction
+//        run the report through redact.mjs before rendering.
+
+import { redactReport } from "./redact.mjs";
 
 const STANCE_KEYS = ["inform", "watch", "review", "probe", "protect", "prepare", "repair", "block"];
 
@@ -21,9 +25,10 @@ const STANCE_NEXT_STEP = {
 
 // ---------- T-203: human report ----------
 
-export function renderHumanReport(report) {
+export function renderHumanReport(report, options = {}) {
   const lines = ["HOUSEKEEPER REPORT", "No files changed.", ""];
-  const primary = pickPrimary(report);
+  const view = applyRedactionLayer(report, options);
+  const primary = pickPrimary(view);
 
   // PRIMARY
   lines.push("PRIMARY");
@@ -45,12 +50,12 @@ export function renderHumanReport(report) {
   // STANCE SUMMARY
   lines.push("STANCE SUMMARY");
   for (const key of STANCE_KEYS) {
-    lines.push(`  ${padStance(key)} ${report.stanceSummary?.[key] ?? 0}`);
+    lines.push(`  ${padStance(key)} ${view.stanceSummary?.[key] ?? 0}`);
   }
   lines.push("");
 
   // BOUNDARIES
-  const boundaryCounts = countBoundaries(report);
+  const boundaryCounts = countBoundaries(view);
   lines.push("BOUNDARIES");
   lines.push(`  protected: ${boundaryCounts.protected}`);
   lines.push(`  sector-boundary: ${boundaryCounts.sectorBoundary}`);
@@ -58,11 +63,11 @@ export function renderHumanReport(report) {
   lines.push("");
 
   // SCAN
-  const degraded = (report.degraded || []).length > 0;
+  const degraded = (view.degraded || []).length > 0;
   lines.push("SCAN");
-  lines.push(`  mode: ${report.mode || "diagnose"}`);
+  lines.push(`  mode: ${view.mode || "diagnose"}`);
   lines.push(`  degraded: ${degraded ? "yes" : "no"}`);
-  lines.push(`  skipped: ${formatSkipped(report)}`);
+  lines.push(`  skipped: ${formatSkipped(view)}`);
 
   // BLOCKED ACTIONS — composed from the primary finding's blockedActions list.
   const blockedSection = formatBlockedActionsSection(primary);
@@ -72,14 +77,14 @@ export function renderHumanReport(report) {
   }
 
   // BLOCKED — full block-stance details when present.
-  const blockSection = formatBlockSection(report);
+  const blockSection = formatBlockSection(view);
   if (blockSection) {
     lines.push("");
     lines.push(...blockSection);
   }
 
   // PROTECTED — list protected findings.
-  const protectedSection = formatProtectedSection(report);
+  const protectedSection = formatProtectedSection(view);
   if (protectedSection) {
     lines.push("");
     lines.push(...protectedSection);
@@ -93,7 +98,7 @@ export function renderHumanReport(report) {
   }
 
   // SCAN DEGRADED — when scan budgets were hit.
-  const degradedSection = formatScanDegradedSection(report);
+  const degradedSection = formatScanDegradedSection(view);
   if (degradedSection) {
     lines.push("");
     lines.push(...degradedSection);
@@ -104,36 +109,38 @@ export function renderHumanReport(report) {
 
 // ---------- T-204: JSON report ----------
 
-export function renderJsonReport(report) {
-  const findings = (report.findings || []).map(stripFindingForJson);
+export function renderJsonReport(report, options = {}) {
+  const view = applyRedactionLayer(report, options);
+  const findings = (view.findings || []).map(stripFindingForJson);
   return {
-    schemaVersion: report.schemaVersion,
-    mode: report.mode || "diagnose",
-    home: report.home,
-    generatedAt: report.generatedAt,
+    schemaVersion: view.schemaVersion,
+    mode: view.mode || "diagnose",
+    home: view.home,
+    generatedAt: view.generatedAt,
     filesChanged: false,
-    primary: report.primary || null,
-    stanceSummary: ensureStanceSummary(report.stanceSummary),
+    primary: view.primary || null,
+    stanceSummary: ensureStanceSummary(view.stanceSummary),
     findings,
-    boundaries: report.boundaries || [],
-    degraded: report.degraded || []
+    boundaries: view.boundaries || [],
+    degraded: view.degraded || []
   };
 }
 
 // ---------- T-206: plan rendering ----------
 
-export function renderPlanReport(report) {
+export function renderPlanReport(report, options = {}) {
+  const view = applyRedactionLayer(report, options);
   const lines = ["HOUSEKEEPER REPORT", "No files changed.", ""];
-  lines.push(`PLAN for ${report.home || "<home>"}`);
-  lines.push(`mode: ${report.mode || "plan"}`);
+  lines.push(`PLAN for ${view.home || "<home>"}`);
+  lines.push(`mode: ${view.mode || "plan"}`);
   lines.push("");
 
-  if (!report.findings || report.findings.length === 0) {
+  if (!view.findings || view.findings.length === 0) {
     lines.push("No findings.");
     return lines.join("\n");
   }
 
-  for (const finding of report.findings) {
+  for (const finding of view.findings) {
     lines.push(`${finding.id} — stance: ${finding.stance}`);
     if (finding.summary) lines.push(`  finding: ${finding.summary}`);
     lines.push(`  next step: ${finding.nextAllowedStep || STANCE_NEXT_STEP[finding.stance] || "none"}`);
@@ -147,6 +154,16 @@ export function renderPlanReport(report) {
   }
 
   return lines.join("\n").trimEnd();
+}
+
+// T-408: route the report through redact.mjs whenever any field needs
+// redaction. Per-finding sensitivityClass-driven redaction always runs (the
+// redactor decides per-finding whether to fail-closed); the global flag adds
+// home-prefix collapse and shareable-mode hash truncation across everything.
+function applyRedactionLayer(report, options) {
+  if (!report) return report;
+  const redact = Boolean(options && options.redact);
+  return redactReport(report, { redact, home: options?.home || report.home });
 }
 
 // ---------- helpers ----------
