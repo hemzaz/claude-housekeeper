@@ -175,7 +175,7 @@ function checkConfig(context) {
     summary: `Housekeeper config is invalid JSON: ${context.config.error}`,
     path: context.config.file
   }] : [];
-  return check("config.invalid_json", issues, "fix config");
+  return check("config.invalid_json", issues, "review");
 }
 
 function protectIssue(check, issue, context) {
@@ -535,7 +535,7 @@ function checkSettingsJson(context) {
     summary: `settings.json is invalid JSON: ${context.settings.error}`,
     path: context.settingsFile
   }];
-  return check("settings.invalid_json", issues, "fix settings.json");
+  return check("settings.invalid_json", issues, "review");
 }
 
 function checkMissingMcpCommands(context) {
