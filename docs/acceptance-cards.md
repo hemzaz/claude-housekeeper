@@ -401,3 +401,41 @@ blocked_actions:
   - claim the local copy is redundant
 ```
 
+## 13. local-shadow-diverged
+
+```yaml
+id: local-shadow-diverged
+purpose: |
+  Diverged local copy of a plugin command may be authorship; review only
+  (protocol-contracts.md "Edge Case 8"; decision-calculus.md §6).
+mode_expectations:
+  safe:
+    claim_level: finding
+    stance: review
+surfaces:
+  - path: ~/.claude/commands/example.md
+    surfaceClass: authored-config
+    ownerClass: user-owned
+    loadBearingClass: known-load-bearing
+    sensitivityClass: private-path
+    executionClass: inert
+    rollbackClass: snapshot-possible
+    scopeClass: in-scope
+evidence:
+  structural:
+    - local command name matches plugin-provided resource
+    - content bytes differ from plugin source
+  ownership:
+    - plugin source identified
+  missing:
+    - user intent for the divergence
+finding:
+  class: contamination
+  stance: review
+allowed_next_step: show both versions and let the user decide
+blocked_actions:
+  - overwrite local edits
+  - propose syncing the local file to plugin source
+  - escalate to prepare or repair
+```
+
