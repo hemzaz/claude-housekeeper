@@ -1,0 +1,29 @@
+HOUSEKEEPER REPORT
+No files changed.
+
+PRIMARY
+  stance: protect
+  finding: protected local command appears to shadow a plugin command
+  evidence: local command name matches plugin-provided resource; do-not-touch rule matched
+  missing key: none for protection
+  next step: none
+
+STANCE SUMMARY
+  inform   0
+  watch    0
+  review   0
+  probe    0
+  protect  1
+  prepare  0
+  repair   0
+  block    0
+
+BOUNDARIES
+  protected: 1
+  sector-boundary: 0
+  secret-adjacent skipped: 0
+
+PROTECTED
+  path: ~/.claude/commands/local-build.md
+  reason: do-not-touch rule
+  action: none
