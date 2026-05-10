@@ -657,10 +657,10 @@ function issueMetadata(id) {
   if (id.includes("dangling") || id.includes("invalid_json")) {
     return {
       severity: "error",
-      risk: "repair",
+      risk: "none",
       confidence: "high",
       actionable: true,
-      proposedAction: "repair"
+      proposedAction: "none"
     };
   }
   return {
@@ -668,7 +668,7 @@ function issueMetadata(id) {
     risk: "reversible-cleanup",
     confidence: "medium",
     actionable: true,
-    proposedAction: "quarantine"
+    proposedAction: "none"
   };
 }
 
