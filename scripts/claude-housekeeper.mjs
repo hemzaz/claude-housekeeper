@@ -3,7 +3,8 @@ import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
-import { auditClaudeHome, formatPlan, formatScorecard } from "./lib/audit.mjs";
+import { assembleReport } from "./lib/audit.mjs";
+import { renderHumanReport, renderJsonReport, renderPlanReport } from "./lib/report.mjs";
 
 const VALID_COMMANDS = new Set([
   "diagnose",
@@ -21,6 +22,7 @@ function parseArgs(argv) {
     command,
     json: false,
     confirm: false,
+    safe: false,
     scope: "all",
     home: process.env.CLAUDE_HOME || path.join(homedir(), ".claude"),
     configPath: null,
@@ -30,6 +32,7 @@ function parseArgs(argv) {
   for (const arg of args) {
     if (arg === "--json") options.json = true;
     else if (arg === "--confirm") options.confirm = true;
+    else if (arg === "--safe") options.safe = true;
     else if (arg.startsWith("--scope=")) options.scope = arg.slice("--scope=".length);
     else if (arg.startsWith("--home=")) options.home = arg.slice("--home=".length);
     else if (arg.startsWith("--config=")) options.configPath = arg.slice("--config=".length);
@@ -38,6 +41,14 @@ function parseArgs(argv) {
   }
 
   return options;
+}
+
+// T-X12: JSON `mode` is required and takes the active runtime mode.
+// Default `diagnose` for normal runs, `safe` when --safe is set, `plan` for the plan command.
+function pickMode(options) {
+  if (options.safe) return "safe";
+  if (options.command === "plan") return "plan";
+  return "diagnose";
 }
 
 function fail(message, code = 1) {
@@ -50,22 +61,38 @@ function printJson(value) {
 }
 
 function runDiagnose(options) {
-  const report = auditClaudeHome(options.home, { scope: options.scope, configPath: options.configPath });
-  if (options.json) printJson(report);
-  else console.log(formatScorecard(report));
-  process.exitCode = report.totalIssues > 0 ? 1 : 0;
+  const mode = pickMode(options);
+  const report = assembleReport(options.home, {
+    scope: options.scope,
+    configPath: options.configPath,
+    mode
+  });
+  if (options.json) printJson(renderJsonReport(report));
+  else console.log(renderHumanReport(report));
+  // Exit non-zero only if the report carries any block findings.
+  process.exitCode = (report.stanceSummary?.block || 0) > 0 ? 1 : 0;
 }
 
 function runPlan(options) {
-  const report = auditClaudeHome(options.home, { scope: options.scope, configPath: options.configPath });
-  if (options.json) printJson(report);
-  else console.log(formatPlan(report));
+  const mode = pickMode(options);
+  const report = assembleReport(options.home, {
+    scope: options.scope,
+    configPath: options.configPath,
+    mode
+  });
+  if (options.json) printJson(renderJsonReport(report));
+  else console.log(renderPlanReport(report));
 }
 
 function runClean(options) {
-  const report = auditClaudeHome(options.home, { scope: options.scope, configPath: options.configPath });
+  const mode = pickMode(options);
+  const report = assembleReport(options.home, {
+    scope: options.scope,
+    configPath: options.configPath,
+    mode
+  });
   if (!options.confirm) {
-    console.log(formatPlan(report));
+    console.log(renderPlanReport(report));
     fail("\nNo files were changed. clean is planned, but this version is read-only.", 2);
     return;
   }
