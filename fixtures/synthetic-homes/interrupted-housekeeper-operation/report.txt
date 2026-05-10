@@ -22,3 +22,8 @@ BLOCKED ACTIONS
   start new mutation operation
   overwrite operation manifest
   hide Housekeeper self-failure
+
+SCAN
+  mode: safe
+  degraded: no
+  skipped: live Claude probes

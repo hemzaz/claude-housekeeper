@@ -131,15 +131,30 @@ for (const fixture of listFixtures()) {
     assert.ok(Array.isArray(json.boundaries), "json boundaries is array");
     assert.ok(Array.isArray(json.degraded), "json degraded is array");
 
-    // If a golden report.json is present, assert its declared schemaVersion
-    // matches what the runtime emits (T-507 will flip both at tag time).
+    // If golden reports are present, assert their declared mode matches the
+    // card-selected runtime mode. This keeps card.yaml, report.json, and
+    // report.txt from silently drifting apart (T-X14).
     const goldenJsonPath = path.join(fixture.dir, "report.json");
     if (existsSync(goldenJsonPath)) {
       const golden = JSON.parse(readFileSync(goldenJsonPath, "utf8"));
       assert.equal(
+        golden.mode,
+        mode,
+        `fixture golden mode (${golden.mode}) must match card-declared mode ${mode}`
+      );
+      assert.equal(
         golden.schemaVersion,
         SCHEMA_VERSION,
         `fixture golden schemaVersion (${golden.schemaVersion}) must match runtime ${SCHEMA_VERSION}`
+      );
+    }
+    const goldenTextPath = path.join(fixture.dir, "report.txt");
+    if (existsSync(goldenTextPath)) {
+      const goldenText = readFileSync(goldenTextPath, "utf8");
+      assert.match(
+        goldenText,
+        new RegExp(`\\n  mode: ${mode}\\n`),
+        `fixture report.txt SCAN mode must match card-declared mode ${mode}`
       );
     }
   });
