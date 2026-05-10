@@ -2,8 +2,12 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { assembleReport, auditClaudeHome } from "../scripts/lib/audit.mjs";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const FIXTURES_ROOT = path.resolve(__dirname, "..", "fixtures", "synthetic-homes");
 
 // ---------- T-201 / T-202: detector + assembleReport contract shape ----------
 
@@ -262,6 +266,34 @@ test("auditClaudeHome is an alias for assembleReport", () => {
   const b = assembleReport(home);
   assert.equal(a.schemaVersion, b.schemaVersion);
   assert.equal(a.findings.length, b.findings.length);
+});
+
+// ---------- T-402: scan-budget degradation against the huge-home fixture ----------
+
+test("huge-home-degraded fixture triggers a degraded scan finding under a low budget", () => {
+  const home = path.join(FIXTURES_ROOT, "huge-home-degraded", "home", ".claude");
+  // The fixture ships only ~30 seed shards (full 6000-file generation lives in
+  // _HOW_TO_GENERATE.md). Lower the budget below the seed count so the
+  // fixture-as-shipped already exercises the budget path.
+  const report = assembleReport(home, { mode: "diagnose", scanLimits: { maxFiles: 5 } });
+  assert.ok(
+    Array.isArray(report.degraded) && report.degraded.length > 0,
+    `report.degraded must be non-empty when budget is hit, got ${JSON.stringify(report.degraded)}`
+  );
+  const reasons = report.degraded.map((d) => d.reason);
+  assert.ok(reasons.includes("max-files"), `expected max-files in degraded reasons, got ${reasons.join(",")}`);
+
+  const budgetFinding = report.findings.find((f) => f.id === "home.scan_budget_hit");
+  assert.ok(budgetFinding, "home.scan_budget_hit finding must be emitted when scan is degraded");
+  assert.equal(budgetFinding.stance, "inform", "scan-budget finding stance is inform (orientation)");
+});
+
+test("huge-home-degraded fixture under a generous budget produces no degraded entries", () => {
+  const home = path.join(FIXTURES_ROOT, "huge-home-degraded", "home", ".claude");
+  const report = assembleReport(home, { mode: "diagnose", scanLimits: { maxFiles: 100000 } });
+  assert.deepEqual(report.degraded, [], "no degraded entries when budget exceeds shipped seed count");
+  const budgetFinding = report.findings.find((f) => f.id === "home.scan_budget_hit");
+  assert.equal(budgetFinding, undefined, "no scan-budget finding when scan completes");
 });
 
 // ---------- helpers ----------
