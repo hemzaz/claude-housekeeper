@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Users/syn-user/.claude/plugins/cache/syn-market/missing-plugin/1.0.0/hook.sh"
+          }
+        ]
+      }
+    ]
+  }
+}
