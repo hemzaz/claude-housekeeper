@@ -1,0 +1,24 @@
+id: expected-orphan-cache
+purpose: Old plugin cache inside grace period is not stale.
+mode_expectations:
+  safe:
+    claim_level: finding
+    stance: watch
+surfaces:
+  - path: ~/.claude/plugins/cache/syn-market/syn-tool/1.0.0
+    surfaceClass: claude-app-data
+    ownerClass: claude-managed
+    loadBearingClass: possibly-load-bearing
+    rollbackClass: snapshot-possible
+evidence:
+  structural:
+    - version not referenced by installed registry
+    - observed orphan marker or age inside documented grace period
+finding:
+  class: hygiene
+  stance: watch
+allowed_next_step: none
+blocked_actions:
+  - call unused
+  - quarantine
+  - delete
