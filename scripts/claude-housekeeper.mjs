@@ -174,18 +174,26 @@ function runVerify() {
   );
   if (!probes.at(-1).ok) return printVerify(probes);
 
+  // T-403: subagent dispatch is opt-in for live probes; v0.1 keeps live probes
+  // minimal per docs/safe-mode.md and docs/truth-probe-catalog.md. Emit a
+  // documented SKIP rather than a misleading FAIL, and do NOT set non-zero
+  // exit when prior probes all passed.
   probes.push({
     label: "subagent dispatch",
-    ok: false,
+    skipped: true,
     command: "claude subagent probe",
     status: null,
-    output: "Not implemented yet: needs a stable non-interactive Agent-tool probe."
+    output: "not implemented in v0.1; run `claude --help` manually"
   });
   printVerify(probes);
 }
 
 function printVerify(probes) {
   for (const probe of probes) {
+    if (probe.skipped) {
+      console.log(`SKIP ${probe.label} (${probe.output})`);
+      continue;
+    }
     console.log(`${probe.ok ? "PASS" : "FAIL"} ${probe.label}`);
     if (!probe.ok) {
       console.log(`command: ${probe.command}`);
