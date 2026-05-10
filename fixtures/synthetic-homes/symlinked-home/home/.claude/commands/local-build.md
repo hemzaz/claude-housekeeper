@@ -1,1 +1,1 @@
-../../../../outside-fixture-root/local-build.md
+../../../outside-home-root/local-build.md

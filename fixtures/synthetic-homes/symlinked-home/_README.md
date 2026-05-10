@@ -1,9 +1,10 @@
 # symlinked-home fixture
 
 `home/.claude/commands/local-build.md` is a relative symlink whose target
-(`../../../../outside-fixture-root/local-build.md`) resolves outside the
-simulated home root. The target file does not exist and intentionally
-must not be created.
+(`../../../outside-home-root/local-build.md`) resolves outside the simulated
+home root (`home/`) but stays inside this fixture directory. A non-dangling
+target lets `node --test` walk the tree on CI without I/O errors; the
+classification semantics (target outside the observed home) are unchanged.
 
 ## Runner contract
 
