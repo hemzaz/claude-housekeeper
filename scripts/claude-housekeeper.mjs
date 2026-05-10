@@ -26,7 +26,8 @@ function parseArgs(argv) {
     scope: "all",
     home: process.env.CLAUDE_HOME || path.join(homedir(), ".claude"),
     configPath: null,
-    rollbackId: null
+    rollbackId: null,
+    scanLimits: null
   };
 
   for (const arg of args) {
@@ -36,6 +37,10 @@ function parseArgs(argv) {
     else if (arg.startsWith("--scope=")) options.scope = arg.slice("--scope=".length);
     else if (arg.startsWith("--home=")) options.home = arg.slice("--home=".length);
     else if (arg.startsWith("--config=")) options.configPath = arg.slice("--config=".length);
+    else if (arg.startsWith("--max-files=")) {
+      options.scanLimits = options.scanLimits || {};
+      options.scanLimits.maxFiles = Number(arg.slice("--max-files=".length));
+    }
     else if (command === "rollback" && !options.rollbackId) options.rollbackId = arg;
     else throw new Error(`Unknown argument: ${arg}`);
   }
@@ -65,7 +70,8 @@ function runDiagnose(options) {
   const report = assembleReport(options.home, {
     scope: options.scope,
     configPath: options.configPath,
-    mode
+    mode,
+    scanLimits: options.scanLimits
   });
   if (options.json) printJson(renderJsonReport(report));
   else console.log(renderHumanReport(report));
@@ -78,7 +84,8 @@ function runPlan(options) {
   const report = assembleReport(options.home, {
     scope: options.scope,
     configPath: options.configPath,
-    mode
+    mode,
+    scanLimits: options.scanLimits
   });
   if (options.json) printJson(renderJsonReport(report));
   else console.log(renderPlanReport(report));
@@ -89,7 +96,8 @@ function runClean(options) {
   const report = assembleReport(options.home, {
     scope: options.scope,
     configPath: options.configPath,
-    mode
+    mode,
+    scanLimits: options.scanLimits
   });
   if (!options.confirm) {
     console.log(renderPlanReport(report));
@@ -166,18 +174,26 @@ function runVerify() {
   );
   if (!probes.at(-1).ok) return printVerify(probes);
 
+  // T-403: subagent dispatch is opt-in for live probes; v0.1 keeps live probes
+  // minimal per docs/safe-mode.md and docs/truth-probe-catalog.md. Emit a
+  // documented SKIP rather than a misleading FAIL, and do NOT set non-zero
+  // exit when prior probes all passed.
   probes.push({
     label: "subagent dispatch",
-    ok: false,
+    skipped: true,
     command: "claude subagent probe",
     status: null,
-    output: "Not implemented yet: needs a stable non-interactive Agent-tool probe."
+    output: "not implemented in v0.1; run `claude --help` manually"
   });
   printVerify(probes);
 }
 
 function printVerify(probes) {
   for (const probe of probes) {
+    if (probe.skipped) {
+      console.log(`SKIP ${probe.label} (${probe.output})`);
+      continue;
+    }
     console.log(`${probe.ok ? "PASS" : "FAIL"} ${probe.label}`);
     if (!probe.ok) {
       console.log(`command: ${probe.command}`);

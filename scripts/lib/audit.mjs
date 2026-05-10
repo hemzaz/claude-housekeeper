@@ -18,6 +18,12 @@ import {
 import { classifySurface } from "./surface.mjs";
 import { decideStance } from "./stance.mjs";
 import { loadConfig, pathMatchesProtection } from "./policy.mjs";
+import {
+  walkBounded,
+  DEFAULT_MAX_FILES,
+  DEFAULT_MAX_BYTES,
+  DEFAULT_MAX_WALL_MS
+} from "./observe.mjs";
 
 // PLUGIN_ORPHAN_GRACE_DAYS — sourced from docs/loader-semantics.md §2 + §7
 // ("orphaned previous versions are removed automatically about 7 days later").
@@ -54,6 +60,12 @@ const SCOPE_TO_DETECTORS = {
   housekeeper: ["housekeeper.interrupted_operation"]
 };
 
+// Cross-cutting detectors that always run regardless of `--scope`.
+const ALWAYS_ON_DETECTORS = new Set([
+  "housekeeper.interrupted_operation",
+  "home.scan_budget_hit"
+]);
+
 // ---------- entry points ----------
 
 export function auditClaudeHome(home, options = {}) {
@@ -63,8 +75,9 @@ export function auditClaudeHome(home, options = {}) {
 export function assembleReport(home, options = {}) {
   const scope = options.scope || DEFAULT_SCOPE;
   const mode = options.mode || "diagnose";
+  const scanLimits = pickScanLimits(options.scanLimits);
   const selected = selectedDetectors(scope);
-  const context = loadContext(home, options);
+  const context = loadContext(home, { ...options, mode, scanLimits });
   const policyMatchesFor = (target) => collectPolicyMatches(target, context);
 
   const detectorOutputs = [];
@@ -86,6 +99,9 @@ export function assembleReport(home, options = {}) {
 
   push(detectorOutputs, selected, detectInterruptedOperation(context));
 
+  // T-402: scan-budget orientation finding for the bounded projects walk.
+  push(detectorOutputs, selected, detectScanBudget(context));
+
   const findings = detectorOutputs.map((raw) => buildFinding(raw, { home, mode, policyMatchesFor }));
 
   const stanceSummary = countStances(findings);
@@ -101,8 +117,17 @@ export function assembleReport(home, options = {}) {
     stanceSummary,
     findings,
     boundaries,
-    degraded: []
+    degraded: context.degraded
   });
+}
+
+function pickScanLimits(overrides) {
+  const o = overrides || {};
+  return {
+    maxFiles: typeof o.maxFiles === "number" ? o.maxFiles : DEFAULT_MAX_FILES,
+    maxBytes: typeof o.maxBytes === "number" ? o.maxBytes : DEFAULT_MAX_BYTES,
+    maxWallMs: typeof o.maxWallMs === "number" ? o.maxWallMs : DEFAULT_MAX_WALL_MS
+  };
 }
 
 // ---------- detector dispatch helpers ----------
@@ -120,13 +145,12 @@ function pushAll(out, selected, detectorOutputs) {
 
 function selectedDetectors(scope) {
   if (scope === "all") {
-    const all = new Set();
+    const all = new Set([...ALWAYS_ON_DETECTORS]);
     for (const ids of Object.values(SCOPE_TO_DETECTORS)) for (const id of ids) all.add(id);
     return all;
   }
   if (!SCOPE_TO_DETECTORS[scope]) throw new Error(`Unknown scope: ${scope}`);
-  // Always include cross-cutting interrupted-op detector regardless of scope.
-  return new Set([...SCOPE_TO_DETECTORS[scope], "housekeeper.interrupted_operation"]);
+  return new Set([...SCOPE_TO_DETECTORS[scope], ...ALWAYS_ON_DETECTORS]);
 }
 
 // ---------- finding assembly (T-202) ----------
@@ -392,6 +416,11 @@ function detectMcpCommandMissing(context) {
     if (!server || typeof server.command !== "string") continue;
     const command = server.command;
     if (!command.startsWith("/")) continue;
+    // T-401: in safe mode, refuse the existsSync probe when the path crosses
+    // a sector boundary (per docs/safe-mode.md "Hard Rules"). Reading the
+    // string from settings is fine; checking the filesystem under a secret
+    // sector is not. Emit nothing rather than a misleading partial finding.
+    if (context.mode === "safe" && isSectorBoundaryPath(command, context)) continue;
     if (existsSync(command)) continue;
     out.push({
       id: "settings.mcp_command_missing",
@@ -585,8 +614,8 @@ function localCommandIdentityFindings(context, identical) {
   for (const command of collectCommands(localDir)) {
     const pluginCommands = context.pluginResources.commands.get(command.name) || [];
     if (pluginCommands.length === 0) continue;
-    const localHash = hashFile(command.path);
-    const hasIdentical = pluginCommands.some((pluginCommand) => hashFile(pluginCommand.path) === localHash);
+    const localHash = hashFile(command.path, context);
+    const hasIdentical = pluginCommands.some((pluginCommand) => hashFile(pluginCommand.path, context) === localHash);
     if (identical !== hasIdentical) continue;
     out.push({
       id: identical ? "registry.local_command_identical" : "registry.local_command_diverged",
@@ -618,7 +647,7 @@ function detectRegistryBrokenFrontmatter(context) {
   ];
   const out = [];
   for (const file of files) {
-    const frontmatter = parseFrontmatter(readText(file.path));
+    const frontmatter = parseFrontmatter(readText(file.path, context));
     const broken = !frontmatter || (file.type === "skill" ? !frontmatter.name : !frontmatter.description);
     if (!broken) continue;
     out.push({
@@ -688,6 +717,51 @@ function detectInterruptedOperation(context) {
   };
 }
 
+// T-402: emit a single orientation finding when the bounded projects walk hit
+// a budget. Stance: `inform` (orientation, no claim about completeness). The
+// report's SCAN section already shows mode/degraded; this finding lets the
+// JSON consumer enumerate the limit hit and the path that was truncated.
+function detectScanBudget(context) {
+  const scan = context.projectsScan;
+  if (!scan || !scan.stopped) return null;
+  const reasons = [...new Set(scan.degraded.map((d) => d.reason).filter(Boolean))];
+  const budgets = [...new Set(scan.degraded.map((d) => d.budget).filter(Boolean))];
+  const reasonText = reasons.join(", ") || "scan-degraded";
+  return {
+    id: "home.scan_budget_hit",
+    class: "orientation",
+    claimLevel: "observation",
+    targetPath: context.projectsRoot,
+    // The projects/ root is claude-managed app data per docs/surface-classification-spec.md
+    // §4 (claude-app-data). Pin the surface explicitly so the stance engine
+    // does not fall through to "unknown owner -> block".
+    surface: makeSurfaceClassification({
+      surfaceClass: "claude-app-data",
+      ownerClass: "claude-managed",
+      loadBearingClass: "not-load-bearing",
+      sensitivityClass: "private-path",
+      executionClass: "inert",
+      rollbackClass: "not-applicable",
+      scopeClass: "in-scope",
+      confidence: "high"
+    }),
+    evidence: {
+      structural: [
+        `bounded scan stopped after ${scan.entries.length} entries`,
+        `budget hit: ${reasonText}`,
+        ...budgets.map((b) => `limit: ${b}`)
+      ]
+    },
+    missingKeys: ["full-traversal of remaining project history"],
+    summary: `bounded scan stopped early at ${context.projectsRoot}`,
+    nextAllowedStep: "rerun with explicit larger budget or narrower scope",
+    blockedActions: [
+      "summarize scan as complete",
+      "propose action from partial project-history evidence"
+    ]
+  };
+}
+
 // ---------- detector primitives ----------
 
 function loadContext(home, options) {
@@ -698,6 +772,20 @@ function loadContext(home, options) {
   const config = loadConfig(home, options.configPath);
   const pluginEntries = flattenPluginEntries(installed.value);
   const pluginResources = collectPluginResources(pluginEntries);
+  const mode = options.mode || "diagnose";
+  const scanLimits = options.scanLimits || {
+    maxFiles: DEFAULT_MAX_FILES,
+    maxBytes: DEFAULT_MAX_BYTES,
+    maxWallMs: DEFAULT_MAX_WALL_MS
+  };
+
+  // T-402: bounded walk of <home>/projects/. Records degraded entries when
+  // any budget is hit. Detector reads `projectsScan` to emit the orientation
+  // finding; the renderer reads context.degraded via report.degraded.
+  const projectsRoot = path.join(home, "projects");
+  const projectsScan = walkBounded(projectsRoot, scanLimits);
+  const degraded = [...projectsScan.degraded];
+
   return {
     home,
     installed,
@@ -706,6 +794,11 @@ function loadContext(home, options) {
     config,
     pluginEntries,
     pluginResources,
+    mode,
+    scanLimits,
+    projectsRoot,
+    projectsScan,
+    degraded,
     now: Date.now()
   };
 }
@@ -850,12 +943,39 @@ function parseFrontmatter(text) {
   return data;
 }
 
-function readText(file) {
+// T-401: sector-boundary predicate per docs/surface-classification-spec.md §7
+// and docs/safe-mode.md "Hard Rules". Used in safe mode to skip content reads
+// under secret-adjacent subtrees. Metadata (existsSync of the parent dir,
+// listing entries) stays allowed because it does not open file contents.
+function isSectorBoundaryPath(target, context) {
+  if (!target) return false;
+  const home = context && context.home;
+  const norm = path.normalize(target);
+  if (home) {
+    const credentialsRoot = path.normalize(path.join(home, "credentials"));
+    if (norm === credentialsRoot || norm.startsWith(credentialsRoot + path.sep)) return true;
+  }
+  const base = path.basename(norm);
+  if (base.startsWith(".env") || base === ".env") return true;
+  // Path segment match for sector words used in the surface spec.
+  const segments = norm.split(path.sep);
+  for (const seg of segments) {
+    if (seg === "credentials") return true;
+    if (seg === "secrets") return true;
+  }
+  return false;
+}
+
+function readText(file, context) {
+  // T-401: in safe mode, never open content under sector-boundary paths.
+  if (context && context.mode === "safe" && isSectorBoundaryPath(file, context)) return "";
   try { return readFileSync(file, "utf8"); }
   catch { return ""; }
 }
 
-function hashFile(file) {
+function hashFile(file, context) {
+  // T-401: same content-read guard as readText.
+  if (context && context.mode === "safe" && isSectorBoundaryPath(file, context)) return "";
   return createHash("sha256").update(readFileSync(file)).digest("hex");
 }
 
