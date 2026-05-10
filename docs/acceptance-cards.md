@@ -274,3 +274,43 @@ blocked_actions:
   - hide Housekeeper self-failure
 ```
 
+## 10. symlinked-home
+
+```yaml
+id: symlinked-home
+purpose: |
+  Symlinked Claude home is not auto-traversed; identity must be canonical
+  before action (protocol-contracts.md "Edge Case 6";
+  surface-classification-spec.md §2 "Scope Class").
+mode_expectations:
+  safe:
+    claim_level: surface
+    stance: review
+surfaces:
+  - path: ~/.claude
+    surfaceClass: unknown
+    ownerClass: unknown
+    loadBearingClass: unknown
+    sensitivityClass: private-path
+    executionClass: inert
+    rollbackClass: unknown
+    scopeClass: parent-contains-boundary
+evidence:
+  structural:
+    - path is a symlink
+    - observed and resolved paths differ
+  ownership:
+    - resolved target ownership unknown
+  missing:
+    - canonical target identity
+    - traversal consent for resolved target
+finding:
+  class: orientation
+  stance: review
+allowed_next_step: report observed and resolved paths; request explicit traversal scope
+blocked_actions:
+  - traverse resolved target by default
+  - mutate through symlink
+  - infer scope from link name alone
+```
+
