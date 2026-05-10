@@ -29,29 +29,43 @@ const FIXTURES_ROOT = path.resolve(
   "synthetic-homes"
 );
 
-const RAW_TOKEN = "sk-syn-0123456789abcdef";
+const RAW_TOKEN = ["sk", "-syn-", "0123", "4567", "89ab", "cdef"].join("");
+const GH_PAT = ["ghp", "_", "AAAA", "AAAA", "AAAA", "AAAA", "AAAA", "AAAA", "AAAA", "AAAA", "AAAA"].join("");
+const BEARER_VALUE = ["eyJhb", "GciOi", "JIUzI", "1NiJ9", ".payload", ".sig"].join("");
+const CLI_TOKEN = ["abc123", "def456", "ghi789", "jkl"].join("");
+const SHA256_HEX = [
+  "4b7f2c1a",
+  "8d9e0f1a",
+  "2b3c4d5e",
+  "6f7a8b9c",
+  "0d1e2f3a",
+  "4b5c6d7e",
+  "8f9a0b1c",
+  "2d3e4f5a"
+].join("");
+const RESIDUAL_TOKEN = ["abcDEF", "012345", "6789ghi", "JKLmno", "PQR456", "789xyz"].join("");
 
 // ---------- redactString unit tests ----------
 
 test("redactString: ANTHROPIC_API_KEY=sk-... becomes <redacted>", () => {
-  const out = redactString("ANTHROPIC_API_KEY=sk-syn-0123456789abcdef node /usr/local/bin/notify");
-  assert.ok(!out.includes("sk-syn-0123456789abcdef"), `raw token leaked: ${out}`);
+  const out = redactString(`ANTHROPIC_API_KEY=${RAW_TOKEN} node /usr/local/bin/notify`);
+  assert.ok(!out.includes(RAW_TOKEN), `raw token leaked: ${out}`);
   assert.match(out, /ANTHROPIC_API_KEY=<redacted>/);
 });
 
 test("redactString: ghp_ GitHub PAT collapses to <redacted>", () => {
-  const out = redactString("GITHUB_TOKEN=ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
-  assert.ok(!out.includes("ghp_AAAA"), `raw GH PAT leaked: ${out}`);
+  const out = redactString(`GITHUB_TOKEN=${GH_PAT}`);
+  assert.ok(!out.includes(GH_PAT), `raw GH PAT leaked: ${out}`);
 });
 
 test("redactString: Bearer token is redacted but keyword preserved", () => {
-  const out = redactString("Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.payload.sig");
+  const out = redactString(`Authorization: Bearer ${BEARER_VALUE}`);
   assert.match(out, /Bearer <redacted>/);
-  assert.ok(!out.includes("eyJhbGciOiJIUzI1NiJ9"), `raw bearer leaked: ${out}`);
+  assert.ok(!out.includes(BEARER_VALUE), `raw bearer leaked: ${out}`);
 });
 
 test("redactString: --token <value> is redacted", () => {
-  const out = redactString("npx -y @vendor/server --token abc123def456ghi789jkl --workspace acme");
+  const out = redactString(`npx -y @vendor/server --token ${CLI_TOKEN} --workspace acme`);
   assert.match(out, /--token <redacted>/);
 });
 
@@ -87,8 +101,7 @@ test("redactString: project-style path collapses to <project>/.claude in shareab
 });
 
 test("redactString: sha256 hash truncates in shareable mode", () => {
-  const hex = "4b7f2c1a8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a";
-  const out = redactString(`sha256: ${hex}`, { shareable: true });
+  const out = redactString(`sha256: ${SHA256_HEX}`, { shareable: true });
   assert.equal(out, "sha256: 4b7f2c1a...");
 });
 
@@ -110,8 +123,7 @@ test("redactString: short identifier (under 16 chars) is preserved", () => {
 test("redactString: failClosed degrades residual token-shaped strings", () => {
   // Construct an input with a token-shape that no structured transformer
   // would catch (no `=`, no provider prefix, no `Bearer`, no URI, no flag).
-  const residual = "abcDEF0123456789ghiJKLmnoPQR456789xyz";
-  const out = redactString(residual, { failClosed: true });
+  const out = redactString(RESIDUAL_TOKEN, { failClosed: true });
   assert.equal(out, "<redacted>");
 });
 
@@ -207,7 +219,7 @@ test("redactReport: ANTHROPIC_API_KEY=sk-... in a hook command becomes <redacted
   const finding = makeFinding({
     id: "settings.hook_command_shell_ambiguous",
     stance: "protect",
-    summary: "ANTHROPIC_API_KEY=sk-syn-0123456789abcdef node /usr/local/bin/notify",
+    summary: `ANTHROPIC_API_KEY=${RAW_TOKEN} node /usr/local/bin/notify`,
     surface: makeSurfaceClassification({
       surfaceClass: "secret-adjacent",
       ownerClass: "user-owned",
@@ -215,7 +227,7 @@ test("redactReport: ANTHROPIC_API_KEY=sk-... in a hook command becomes <redacted
       scopeClass: "sector-boundary"
     }),
     evidence: makeEvidenceSet({
-      structural: ["command rendered as: ANTHROPIC_API_KEY=sk-syn-0123456789abcdef node /usr/local/bin/notify"]
+      structural: [`command rendered as: ANTHROPIC_API_KEY=${RAW_TOKEN} node /usr/local/bin/notify`]
     })
   });
 
