@@ -101,11 +101,13 @@ export function formatScorecard(report) {
       scorecardAction(check)
     ]);
 
-  if (rows.length === 0) return "SCORECARD\nNo issues found.";
+  if (rows.length === 0) return "HOUSEKEEPER REPORT\nNo files changed.\nSCORECARD\nNo issues found.";
 
   const idWidth = Math.max("check".length, ...rows.map((row) => row[0].length));
   const issueWidth = Math.max("issues".length, ...rows.map((row) => row[1].length));
   const lines = [
+    "HOUSEKEEPER REPORT",
+    "No files changed.",
     `SCORECARD${" ".repeat(Math.max(1, idWidth - 5))}  ${"issues".padStart(issueWidth)}   action`,
     `${"-".repeat(idWidth)}  ${"-".repeat(issueWidth)}   ${"-".repeat(14)}`
   ];
@@ -122,7 +124,7 @@ export function formatScorecard(report) {
 }
 
 export function formatPlan(report) {
-  const lines = [`PLAN for ${report.home}`, ""];
+  const lines = ["HOUSEKEEPER REPORT", "No files changed.", `PLAN for ${report.home}`, ""];
   let wroteAny = false;
 
   for (const check of report.checks) {
