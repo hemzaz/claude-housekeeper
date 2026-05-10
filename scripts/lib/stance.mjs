@@ -1,8 +1,15 @@
 // Stance engine per docs/decision-calculus.md §4 (decision order),
-// §5 (hard overrides), §6 (stance matrix), §10 (stance payload).
+// §5 (hard overrides), §6 (stance matrix), §10 (stance payload),
+// §13 (v0.1 degradation: `repair` is unreachable, falls back to `prepare`).
 // Pure function. No I/O.
 
 import { makeStance } from "./contracts.mjs";
+
+// Per docs/decision-calculus.md §13: in v0.1 the `repair` stance is
+// unreachable because Housekeeper-owned rollback infrastructure does not
+// ship until v0.4. Any decision path that would return `repair` is
+// re-mapped to `prepare` with a deferred next-step note.
+const V01_REPAIR_DEFERRED_STEP = "deferred until v0.4 rollback infrastructure";
 
 /**
  * @param {object} args
@@ -13,9 +20,31 @@ import { makeStance } from "./contracts.mjs";
  * @param {string} [args.mode] - "diagnose" | "safe" | "plan".
  * @param {string} [args.findingClass] - finding class (integrity | hygiene | shadow | divergence | ...).
  * @param {boolean} [args.consentGranted] - whether the user has approved a repair plan.
- * @returns {object} Stance payload per §10.
+ * @returns {object} Stance payload per §10. In v0.1, `stance: "repair"` is
+ *   degraded to `stance: "prepare"` per §13.
  */
 export function decideStance(args = {}) {
+  const stance = decideStanceCore(args);
+  // §13 v0.1 degradation guard. Runs LAST so v0.4+ logic above is uncontroversial.
+  if (stance && stance.stance === "repair") {
+    return makeStance({
+      stance: "prepare",
+      why: stance.why,
+      missingKey: "v0.4 rollback infrastructure",
+      nextAllowedStep: V01_REPAIR_DEFERRED_STEP,
+      notAllowed: stance.notAllowed,
+      userDecisionNeeded: true
+    });
+  }
+  return stance;
+}
+
+/**
+ * Core decision calculus per §4–§6, §10. Internal helper. v0.4+ may export
+ * this directly once the §13 v0.1 degradation rule is removed.
+ * @private
+ */
+function decideStanceCore(args = {}) {
   const surface = args.surface || {};
   const evidence = args.evidence || {};
   const missingKeys = Array.isArray(args.missingKeys) ? args.missingKeys : [];

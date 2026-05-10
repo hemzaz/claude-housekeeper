@@ -363,3 +363,28 @@ block        3
 This teaches the user what kind of attention the home needs.
 
 It also keeps Housekeeper from sounding like every finding is a cleanup task.
+
+## 13. v0.1 Degradation
+
+In v0.1 the `repair` stance is unreachable because Housekeeper-owned rollback
+infrastructure does not ship until v0.4. Per `docs/repair-rollback-spec.md`,
+`repair` requires reversibility keys (operation manifest, exact-byte snapshot,
+restore command, verification plan) that v0.1 cannot produce.
+
+Therefore in v0.1, any decision path that would otherwise return `repair`
+MUST return `prepare` instead, with `nextAllowedStep` set to:
+
+```text
+deferred until v0.4 rollback infrastructure
+```
+
+This rule applies in both `safe` and `diagnose` modes. It does not weaken any
+hard override from §5; `protect` and `block` still win when their conditions
+hold. Once Housekeeper rollback infrastructure ships, the rule is removed and
+§4 decision order returns unchanged.
+
+Why this is a degradation, not a redefinition: the stance vocabulary stays
+intact for v0.2+ when reversibility keys exist. The v0.1 build simply cannot
+satisfy the Evidence Gate for `repair`, so the engine surfaces the missing
+key (`v0.4 rollback infrastructure`) instead of inventing authority it does
+not have.
