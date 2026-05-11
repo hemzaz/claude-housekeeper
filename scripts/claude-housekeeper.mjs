@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { assembleReport } from "./lib/audit.mjs";
 import { renderHumanReport, renderJsonReport, renderPlanReport } from "./lib/report.mjs";
 
@@ -15,8 +16,57 @@ const VALID_COMMANDS = new Set([
   "rollback"
 ]);
 
+const HELP_TEXT = `claude-housekeeper — read-only Claude Code home inspection.
+
+Usage:
+  claude-housekeeper [command] [options]
+
+Commands:
+  diagnose            Read-only report (default if omitted).
+  plan                Detailed per-finding plan with paths and next steps.
+  verify              Run live Claude CLI smoketest probes.
+  clean               Refuses mutation in v0.1 (snapshot/rollback not yet shipped).
+  harden              Refuses mutation in v0.1.
+  rollback <id>       Refuses mutation in v0.1.
+
+Options:
+  --json              Print the machine-readable report (stable schema 0.1).
+  --safe              Stricter posture: parse only; refuse loader/MCP/hook execution.
+  --redact            Privacy mode: collapse home to ~, scrub secrets and tokens.
+  --scope=<scope>     One of: settings, plugins, registry, housekeeper, all (default: all).
+  --home=<path>       Claude home root (default: $CLAUDE_HOME or ~/.claude).
+  --config=<path>     Override the housekeeper config path.
+  --max-files=<n>     Bound the projects-tree walk; emits home.scan_budget_hit if hit.
+  -h, --help          Show this help and exit.
+  -v, --version       Print version and exit.
+
+Examples:
+  claude-housekeeper                            # diagnose ~/.claude
+  claude-housekeeper plan --scope=registry      # local commands and skills only
+  claude-housekeeper diagnose --safe --redact   # safe posture, share-safe output
+  claude-housekeeper diagnose --json | jq .
+
+Docs: https://hemzaz.github.io/claude-housekeeper
+`;
+
+function loadVersion() {
+  try {
+    const pkgPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "package.json");
+    const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
+    return pkg.version || "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
 function parseArgs(argv) {
   const args = [...argv];
+  // --help / --version short-circuit before command extraction so they work
+  // anywhere on the command line and from any subcommand.
+  for (const arg of args) {
+    if (arg === "--help" || arg === "-h") return { command: "help" };
+    if (arg === "--version" || arg === "-v") return { command: "version" };
+  }
   const command = VALID_COMMANDS.has(args[0]) ? args.shift() : "diagnose";
   const options = {
     command,
@@ -44,7 +94,7 @@ function parseArgs(argv) {
       options.scanLimits.maxFiles = Number(arg.slice("--max-files=".length));
     }
     else if (command === "rollback" && !options.rollbackId) options.rollbackId = arg;
-    else throw new Error(`Unknown argument: ${arg}`);
+    else throw new Error(`Unknown argument: ${arg} — run \`claude-housekeeper --help\` for usage.`);
   }
 
   return options;
@@ -218,15 +268,23 @@ function printVerify(probes) {
 
 try {
   const options = parseArgs(process.argv.slice(2));
-  options.home = resolveClaudeHome(options.home);
-  if (!existsSync(options.home)) {
-    fail(`Claude home does not exist: ${options.home}`, 2);
-  } else if (options.command === "diagnose") runDiagnose(options);
-  else if (options.command === "plan") runPlan(options);
-  else if (options.command === "clean") runClean(options);
-  else if (options.command === "verify") runVerify(options);
-  else if (options.command === "harden") runHarden(options);
-  else if (options.command === "rollback") runRollback(options);
+  if (options.command === "help") {
+    process.stdout.write(HELP_TEXT);
+    process.exitCode = 0;
+  } else if (options.command === "version") {
+    console.log(`claude-housekeeper ${loadVersion()}`);
+    process.exitCode = 0;
+  } else {
+    options.home = resolveClaudeHome(options.home);
+    if (!existsSync(options.home)) {
+      fail(`Claude home does not exist: ${options.home}`, 2);
+    } else if (options.command === "diagnose") runDiagnose(options);
+    else if (options.command === "plan") runPlan(options);
+    else if (options.command === "clean") runClean(options);
+    else if (options.command === "verify") runVerify(options);
+    else if (options.command === "harden") runHarden(options);
+    else if (options.command === "rollback") runRollback(options);
+  }
 } catch (error) {
   fail(error.message, 2);
 }
