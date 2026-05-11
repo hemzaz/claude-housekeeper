@@ -18,6 +18,8 @@ import {
   composeRollbackPlan,
   validateRollbackPlan,
   executeRollbackPlan,
+  abortRollbackOperation,
+  AbortNotAllowedError,
   LockHeldError as RollbackLockHeldError,
   PlanDriftError as RollbackPlanDriftError,
   RollbackNotImplementedError,
@@ -57,6 +59,8 @@ Options:
   --config=<path>     Override the housekeeper config path.
   --max-files=<n>     Bound the projects-tree walk; emits home.scan_budget_hit if hit.
   --dry-run           For rollback, print the rollback plan without changing files.
+  --abort             For rollback, cancel a snapshot_taken operation and delete
+                        its unused snapshot tree.
   --confirm           Arm the mutation path for clean or rollback. Without this
                         flag, mutation-capable commands refuse mutation
                         (dry-run only). REQUIRED to actually mutate, but
@@ -79,6 +83,7 @@ Examples:
   claude-housekeeper diagnose --safe --redact   # safe posture, share-safe output
   claude-housekeeper diagnose --json | jq .
   claude-housekeeper rollback op_20260511143022_a1b2c3d4 --dry-run
+  claude-housekeeper rollback op_20260511143022_a1b2c3d4 --abort --confirm --yes
 
 Docs: https://hemzaz.github.io/claude-housekeeper
 `;
@@ -116,7 +121,8 @@ function parseArgs(argv) {
     rollbackId: null,
     scanLimits: null,
     target: null,
-    path: null
+    path: null,
+    abort: false
   };
 
   for (const arg of args) {
@@ -124,6 +130,7 @@ function parseArgs(argv) {
     else if (arg === "--confirm") options.confirm = true;
     else if (arg === "--yes") options.yes = true;
     else if (arg === "--dry-run") options.dryRun = true;
+    else if (arg === "--abort") options.abort = true;
     else if (arg === "--safe") options.safe = true;
     else if (arg === "--redact") options.redact = true;
     else if (arg.startsWith("--scope=")) options.scope = arg.slice("--scope=".length);
@@ -359,6 +366,30 @@ async function runRollback(options) {
   }
 
   try {
+    if (options.abort) {
+      if (!options.confirm) {
+        fail("Refusing abort: --confirm not passed. Pass --abort --confirm --yes to discard the snapshot.", 2);
+        return;
+      }
+
+      if (!options.yes) {
+        fail("Refusing abort: --yes not passed. Pass --abort --confirm --yes to discard the snapshot.", 2);
+        return;
+      }
+
+      const manifest = await abortRollbackOperation(options.rollbackId, options.home);
+      if (options.json) {
+        printJson({ manifest });
+      } else {
+        console.log("HOUSEKEEPER ROLLBACK ABORT");
+        console.log(`Operation: ${manifest.id}`);
+        console.log("");
+        console.log("DONE. Operation aborted.");
+      }
+      process.exitCode = manifest.status === "aborted" ? 0 : 1;
+      return;
+    }
+
     const plan = await composeRollbackPlan(options.home, options.rollbackId);
 
     if (plan.refused.length > 0) {
@@ -432,6 +463,14 @@ async function runRollback(options) {
         printJson({ error: "rollback-kind-not-implemented", kind: err.kind });
       } else {
         fail(`Rollback operation kind "${err.kind}" is not implemented in v0.2.0.`, 2);
+      }
+      return;
+    }
+    if (err instanceof AbortNotAllowedError) {
+      if (options.json) {
+        printJson({ error: "abort-not-allowed", opId: err.opId, status: err.status });
+      } else {
+        fail(`Operation ${err.opId} has status "${err.status}", which cannot be aborted. Use rollback ${err.opId} for applied operations.`, 2);
       }
       return;
     }

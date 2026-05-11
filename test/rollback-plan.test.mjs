@@ -16,6 +16,8 @@ import {
   composeRollbackPlan,
   executeRollbackPlan,
   validateRollbackPlan,
+  abortRollbackOperation,
+  AbortNotAllowedError,
   LockHeldError,
   PlanDriftError,
   RollbackNotImplementedError,
@@ -56,6 +58,32 @@ async function makeAppliedOperation() {
     targetDir,
     opId,
     manifest,
+    operationsDir: path.join(claudeHome, "housekeeper", "operations"),
+    snapshotsDir: path.join(claudeHome, "housekeeper", "snapshots", opId)
+  };
+}
+
+async function makeSnapshotTakenOperation() {
+  const parent = await mkdtemp(path.join(tmpdir(), "ck-rollback-abort-"));
+  const claudeHome = path.join(parent, ".claude");
+  const targetDir = path.join(claudeHome, "plugins", "cache", "market", "tool", "0.9.0");
+  mkdirSync(targetDir, { recursive: true });
+  const fileA = path.join(targetDir, "plugin.json");
+  const fileB = path.join(targetDir, "data.txt");
+  writeFileSync(fileA, "{\"name\":\"tool\"}\n");
+  writeFileSync(fileB, "cache data\n");
+
+  const { opId } = await takeSnapshot(parent, {
+    targets: [fileA, fileB],
+    command: "clean",
+    mode: "confirm",
+    consentSummary: "test abort"
+  });
+
+  return {
+    claudeHome,
+    targetDir,
+    opId,
     operationsDir: path.join(claudeHome, "housekeeper", "operations"),
     snapshotsDir: path.join(claudeHome, "housekeeper", "snapshots", opId)
   };
@@ -284,4 +312,33 @@ test("executeRollbackPlan releases lockfile after rollback operation failure", a
     (err) => err instanceof RollbackNotImplementedError
   );
   assert.equal(existsSync(path.join(claudeHome, "housekeeper", "lock")), false);
+});
+
+test("abortRollbackOperation aborts snapshot_taken operation and deletes snapshot directory", async () => {
+  const { claudeHome, opId, operationsDir, snapshotsDir } = await makeSnapshotTakenOperation();
+
+  const updated = await abortRollbackOperation(opId, claudeHome);
+
+  assert.equal(updated.status, "aborted");
+  assert.match(updated.abortedAt, /^\d{4}-\d{2}-\d{2}T/);
+  assert.equal(existsSync(snapshotsDir), false);
+  assert.equal(existsSync(path.join(claudeHome, "housekeeper", "lock")), false);
+  const manifest = JSON.parse(readFileSync(path.join(operationsDir, `${opId}.json`), "utf8"));
+  assert.equal(manifest.status, "aborted");
+  assert.equal(manifest.abortedAt, updated.abortedAt);
+});
+
+test("abortRollbackOperation refuses applied operation", async () => {
+  const { claudeHome, opId, snapshotsDir } = await makeAppliedOperation();
+
+  await assert.rejects(
+    () => abortRollbackOperation(opId, claudeHome),
+    (err) => {
+      assert.ok(err instanceof AbortNotAllowedError);
+      assert.equal(err.opId, opId);
+      assert.equal(err.status, "verified");
+      return true;
+    }
+  );
+  assert.equal(existsSync(snapshotsDir), true);
 });
