@@ -15,6 +15,7 @@ import {
   readdir,
   stat
 } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { join, basename } from "node:path";
 import os from "node:os";
 import { loadConfig, pathMatchesProtection } from "./policy.mjs";
@@ -554,8 +555,14 @@ export async function applyOperation(id, home, ops) {
     const entry = manifest.files[i];
     try {
       await ops[i].apply(entry.originalPath);
-      // Record post-apply hash.
-      entry.sha256After = await hashFile(entry.originalPath);
+      // If the path no longer exists after apply, this was an intended deletion.
+      // Leave sha256After = null to signal deletion; do not call hashFile.
+      if (existsSync(entry.originalPath)) {
+        entry.sha256After = await hashFile(entry.originalPath);
+      } else {
+        entry.sha256After = null;
+      }
+      entry.applied = true;
     } catch {
       hadFailure = true;
       manifest.partialApply = true;
@@ -596,8 +603,13 @@ export async function verify(id, home) {
 
   let allMatch = true;
   for (const entry of manifest.files) {
-    // Only verify files that were successfully applied (have a sha256After).
     if (entry.sha256After === null || entry.sha256After === undefined) {
+      // Intended deletion: the file must no longer exist.
+      if (existsSync(entry.originalPath)) {
+        // Deletion silently failed — the file is still present.
+        entry.verifyFailure = true;
+        allMatch = false;
+      }
       continue;
     }
     const actual = await hashFile(entry.originalPath);
