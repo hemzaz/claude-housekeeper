@@ -205,9 +205,10 @@ factories) are merged into main.
 
 ## Cross-phase
 
-- [ ] **T-619** Update `docs/schema-stability.md` for v0.2 manifest schema
+- [x] **T-619** Update `docs/schema-stability.md` for v0.2 manifest schema
   - Scope: `docs/schema-stability.md` — add the v0.2 manifest schema fields to
     the stability table; mark `schemaVersion: "0.2"` as stable for v0.2.x
   - Verify: `test/schema-stability.test.mjs` still passes; the stability doc
     references `docs/rollback-contracts.md` for the full field list
   - blockedBy: PR #29 merged
+  - Schema for v0.2.0-beta.1 manifests documented in `docs/schema-stability.md§2`.
