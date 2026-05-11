@@ -4,7 +4,7 @@
 // and execute the restore while preserving the Housekeeper lock invariant.
 
 import { existsSync } from "node:fs";
-import { copyFile, mkdir, open, readFile, unlink } from "node:fs/promises";
+import { copyFile, mkdir, open, readFile, rm, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import os from "node:os";
 import { atomicWrite, generateOpId, hashFile } from "./snapshot.mjs";
@@ -49,6 +49,16 @@ export class RollbackNotImplementedError extends Error {
     this.name = "RollbackNotImplementedError";
     this.code = "rollback-kind-not-implemented";
     this.kind = kind;
+  }
+}
+
+export class AbortNotAllowedError extends Error {
+  constructor(opId, status) {
+    super(`Operation ${opId} has status "${status}", which cannot be aborted.`);
+    this.name = "AbortNotAllowedError";
+    this.code = "abort-not-allowed";
+    this.opId = opId;
+    this.status = status;
   }
 }
 
@@ -361,6 +371,45 @@ export async function executeRollbackPlan(plan, home) {
     manifest.rolledBackAt = new Date().toISOString();
     await atomicWrite(sourceManifestPath, JSON.stringify(manifest, null, 2) + os.EOL);
 
+    return manifest;
+  } finally {
+    await releaseLock(acquiredPath);
+  }
+}
+
+/**
+ * abortRollbackOperation(opId, home) — cancel a pre-apply operation.
+ *
+ * Aborting is intentionally narrower than rollback: only snapshot_taken
+ * operations are eligible because no user files have been mutated yet.
+ */
+export async function abortRollbackOperation(opId, home) {
+  const lockPath = join(home, "housekeeper", "lock");
+  if (existsSync(lockPath)) {
+    try {
+      const raw = await readFile(lockPath, "utf8");
+      const existing = JSON.parse(raw);
+      if (Date.now() < new Date(existing.stalenessAt).getTime()) {
+        throw new LockHeldError(existing);
+      }
+    } catch (err) {
+      if (err instanceof LockHeldError) throw err;
+    }
+  }
+
+  const acquiredPath = await acquireLock(home);
+
+  try {
+    const sourceManifestPath = join(home, "housekeeper", "operations", `${opId}.json`);
+    const manifest = await readOperationManifest(sourceManifestPath);
+    if (manifest.status !== "snapshot_taken") {
+      throw new AbortNotAllowedError(opId, manifest.status);
+    }
+
+    await rm(join(home, "housekeeper", "snapshots", opId), { recursive: true, force: true });
+    manifest.status = "aborted";
+    manifest.abortedAt = new Date().toISOString();
+    await atomicWrite(sourceManifestPath, JSON.stringify(manifest, null, 2) + os.EOL);
     return manifest;
   } finally {
     await releaseLock(acquiredPath);

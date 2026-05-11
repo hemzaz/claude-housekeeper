@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { takeSnapshot } from "../scripts/lib/snapshot.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const CLI = path.join(REPO_ROOT, "scripts", "claude-housekeeper.mjs");
@@ -148,6 +149,32 @@ function cleanCacheAndCaptureOperation() {
   return { home, cacheDir, opId: match[1] };
 }
 
+async function snapshotCacheAndCaptureOperation() {
+  const parent = mkdtempSync(path.join(tmpdir(), "ck-cli-abort-"));
+  const home = path.join(parent, ".claude");
+  const cacheDir = path.join(home, "plugins", "cache", "test-market", "test-tool", "0.9.0");
+  mkdirSync(cacheDir, { recursive: true });
+  const pluginJson = path.join(cacheDir, "plugin.json");
+  const dataFile = path.join(cacheDir, "data.txt");
+  writeFileSync(pluginJson, JSON.stringify({ name: "test-tool", version: "0.9.0" }) + "\n");
+  writeFileSync(dataFile, "cache data\n");
+
+  const { opId } = await takeSnapshot(parent, {
+    targets: [pluginJson, dataFile],
+    command: "clean",
+    mode: "confirm",
+    consentSummary: "test abort"
+  });
+
+  return {
+    home,
+    cacheDir,
+    opId,
+    snapshotDir: path.join(home, "housekeeper", "snapshots", opId),
+    manifestPath: path.join(home, "housekeeper", "operations", `${opId}.json`)
+  };
+}
+
 test("clean (no flags) prints dry-run plan and exits 0", () => {
   // No home needed: flag gate fires before existsSync check.
   const result = runCli(["clean"]);
@@ -231,6 +258,7 @@ test("rollback help documents op id, dry-run, confirm, and yes flags", () => {
   assert.match(result.stdout, /rollback <id>/);
   assert.match(result.stdout, /op_20260511143022_a1b2c3d4/);
   assert.match(result.stdout, /--dry-run/);
+  assert.match(result.stdout, /--abort/);
   assert.match(result.stdout, /--confirm/);
   assert.match(result.stdout, /--yes/);
 });
@@ -304,4 +332,35 @@ test("rollback --confirm --yes restores files and marks manifest rolled_back", (
   const manifest = JSON.parse(readFileSync(path.join(home, "housekeeper", "operations", `${opId}.json`), "utf8"));
   assert.equal(manifest.status, "rolled_back");
   assert.ok(manifest.files.every((entry) => entry.rollbackVerified === true));
+});
+
+test("rollback --abort --confirm --yes aborts snapshot_taken operation and clears diagnose finding", async () => {
+  const { home, opId, snapshotDir, manifestPath } = await snapshotCacheAndCaptureOperation();
+
+  const result = runCli(["rollback", opId, "--abort", "--confirm", "--yes", `--home=${home}`]);
+
+  assert.equal(result.status, 0, `expected exit 0, got ${result.status}:\nstdout: ${result.stdout}\nstderr: ${result.stderr}`);
+  assert.match(result.stdout, /DONE\. Operation aborted\./);
+  assert.equal(existsSync(snapshotDir), false);
+  const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+  assert.equal(manifest.status, "aborted");
+  assert.match(manifest.abortedAt, /^\d{4}-\d{2}-\d{2}T/);
+
+  const diagnose = runCli(["diagnose", "--json", `--home=${home}`]);
+  assert.equal(diagnose.status, 0, `diagnose failed:\nstdout: ${diagnose.stdout}\nstderr: ${diagnose.stderr}`);
+  const report = JSON.parse(diagnose.stdout);
+  const interrupted = report.findings.find((finding) => finding.id === "housekeeper.interrupted_operation");
+  assert.equal(interrupted, undefined);
+});
+
+test("rollback --abort without --confirm refuses without changing snapshot_taken operation", async () => {
+  const { home, opId, snapshotDir, manifestPath } = await snapshotCacheAndCaptureOperation();
+
+  const result = runCli(["rollback", opId, "--abort", `--home=${home}`]);
+
+  assert.equal(result.status, 2, `expected exit 2, got ${result.status}`);
+  assert.match(result.stderr, /Refusing abort: --confirm not passed/);
+  assert.equal(existsSync(snapshotDir), true);
+  const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+  assert.equal(manifest.status, "snapshot_taken");
 });
