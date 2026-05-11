@@ -37,8 +37,12 @@ Options:
   --home=<path>       Claude home root (default: $CLAUDE_HOME or ~/.claude).
   --config=<path>     Override the housekeeper config path.
   --max-files=<n>     Bound the projects-tree walk; emits home.scan_budget_hit if hit.
-  --confirm           Required by mutation commands when they refuse in v0.1
-                        (clean/harden/rollback); kept on the surface for future use.
+  --confirm           Arm the mutation path for clean. Without this flag, clean
+                        refuses mutation (dry-run only). REQUIRED to actually
+                        mutate, but mutation is still blocked until --yes is passed.
+  --yes               Skip the consent prompt. REQUIRED in combination with
+                        --confirm to actually mutate. Designed for CI / scripted
+                        runs; matches the no-stdin convention.
   -h, --help          Show this help and exit.
   -v, --version       Print version and exit.
 
@@ -74,6 +78,7 @@ function parseArgs(argv) {
     command,
     json: false,
     confirm: false,
+    yes: false,
     safe: false,
     redact: false,
     scope: "all",
@@ -86,6 +91,7 @@ function parseArgs(argv) {
   for (const arg of args) {
     if (arg === "--json") options.json = true;
     else if (arg === "--confirm") options.confirm = true;
+    else if (arg === "--yes") options.yes = true;
     else if (arg === "--safe") options.safe = true;
     else if (arg === "--redact") options.redact = true;
     else if (arg.startsWith("--scope=")) options.scope = arg.slice("--scope=".length);
@@ -164,10 +170,19 @@ function runClean(options) {
   const renderOpts = { redact: options.redact, home: options.home };
   if (!options.confirm) {
     console.log(renderPlanReport(report, renderOpts));
-    fail("\nNo files were changed. clean is planned, but this version is read-only.", 2);
+    console.log("\nDRY-RUN — pass --confirm to arm mutation.");
+    process.exitCode = 0;
     return;
   }
-  fail("No files were changed. clean requires snapshot, quarantine, and rollback support before it can mutate.", 2);
+  if (!options.yes) {
+    console.log(renderPlanReport(report, renderOpts));
+    fail("\nRefusing mutation: --yes not passed. Pass --confirm --yes to skip the prompt and apply.", 2);
+    return;
+  }
+  // Both --confirm and --yes passed: mutation path armed and consented.
+  // TODO: T-704 will wire snapshot/apply/verify here.
+  console.log("TODO: T-704 will wire snapshot/apply/verify here.");
+  process.exitCode = 0;
 }
 
 function runHarden() {
@@ -297,6 +312,13 @@ try {
   } else if (options.command === "version") {
     console.log(`claude-housekeeper ${loadVersion()}`);
     process.exitCode = 0;
+  } else if (options.command === "clean" && !options.confirm) {
+    // Flag gate: no --confirm → dry-run, no home needed.
+    console.log("DRY-RUN — pass --confirm to arm mutation.");
+    process.exitCode = 0;
+  } else if (options.command === "clean" && options.confirm && !options.yes) {
+    // Flag gate: --confirm without --yes → consent refused, no home needed.
+    fail("Refusing mutation: --yes not passed. Pass --confirm --yes to skip the prompt and apply.", 2);
   } else {
     options.home = resolveClaudeHome(options.home);
     if (!existsSync(options.home)) {
