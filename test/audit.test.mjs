@@ -221,6 +221,17 @@ test("local command shadows emit exactly one identical or diverged finding per p
 
   const identical = report.findings.find((f) => f.id === "registry.local_command_identical");
   assert.equal(identical.stance, "review");
+  // nextAllowedStep must give actionable guidance, not a terse placeholder.
+  assert.equal(
+    identical.nextAllowedStep,
+    "show source, target, and precedence; await user intent"
+  );
+
+  const diverged = report.findings.find((f) => f.id === "registry.local_command_diverged");
+  assert.equal(
+    diverged.nextAllowedStep,
+    "show both versions and let the user decide"
+  );
 });
 
 // ---------- T-X08: repair stance unreachable in v0.1 ----------
