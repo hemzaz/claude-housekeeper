@@ -220,7 +220,7 @@ test("--help shows --target and --path flags under clean", () => {
   assert.equal(result.status, 0);
   assert.match(result.stdout, /--target=/);
   assert.match(result.stdout, /--path=/);
-  assert.match(result.stdout, /REQUIRED when --confirm is set/);
+  assert.match(result.stdout, /REQUIRED when clean\s+--confirm is set/);
 });
 
 // ── T-800 rollback parser tests ──────────────────────────────────────────────

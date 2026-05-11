@@ -1,7 +1,7 @@
 # Claude Housekeeper
 
-Read-only Claude Code home inspection for broken hooks, plugin cache drift,
-and protected local state.
+Safe Claude Code home inspection and guarded cleanup for broken hooks,
+plugin cache drift, and protected local state.
 
 Claude Housekeeper is a Claude Code home inspector: a plugin and local CLI
 that reports drift in the parts of a Claude setup that tend to accumulate
@@ -9,14 +9,15 @@ over time. The first wedge focuses on settings hooks, plugin cache
 versions, the local command and skill registry, and Housekeeper's own
 operation manifests.
 
-The product promise is simple: run one read-only command, get a report
+The product promise is simple: run one inspection command, get a report
 with stance, evidence, missing keys, and boundaries, and understand what
 is happening before Claude starts failing mid-session.
 
-No files changed. `diagnose`, `plan`, and `verify` are read-only.
-`clean`, `harden`, and `rollback` are visible so the command surface is
-stable, but they refuse mutation in v0.1 until snapshot and rollback
-mechanics are implemented.
+`diagnose`, `plan`, and `verify` are read-only. `clean --confirm --yes`
+can remove one outside-grace plugin cache version after creating a
+Housekeeper-owned snapshot, and `rollback <id> --confirm --yes` restores
+that operation from the snapshot. `harden` is still planned and refuses
+mutation.
 
 ## Command Surface
 
@@ -30,13 +31,14 @@ claude-housekeeper clean --confirm                 # refuses without --yes
 claude-housekeeper clean --confirm --yes \
     --target=plugin.cache_unreferenced \
     --path=<absolute path>                         # mutates a single plugin cache
-                                                   # version (v0.2.0-alpha)
+                                                   # version (v0.2.0-beta)
 claude-housekeeper harden                          # planned; refuses mutation
-claude-housekeeper rollback <id>                   # planned for v0.2; refuses
+claude-housekeeper rollback <id> --dry-run         # shows restore plan
+claude-housekeeper rollback <id> --confirm --yes   # restores from snapshot
 ```
 
 Only `plugin.cache_unreferenced` (plugin cache versions OUTSIDE the 7-day
-grace window) is cleanable in v0.2.0-alpha. Everything else routes to
+grace window) is cleanable in v0.2.0-beta. Everything else routes to
 `refused[]` with a structured reason — see `docs/design/clean-design.md` for
 the full taxonomy.
 
@@ -183,7 +185,10 @@ Housekeeper follows these rules:
 5. Claude checkpointing is not Housekeeper rollback.
 6. Mutation requires Housekeeper-owned rollback proof.
 
-Version `0.1.0` is read-only by design. `diagnose`, `plan`, and `verify` never modify files. `clean`, `harden`, and `rollback` are visible so the command surface is stable, but they currently refuse to mutate anything.
+`diagnose`, `plan`, and `verify` never modify files. `clean --confirm --yes`
+and `rollback <id> --confirm --yes` are the only mutation paths in
+v0.2.0-beta; both require Housekeeper-owned manifests and rollback proof.
+`harden` remains visible but refuses mutation.
 
 Future action planning will use stance vocabulary:
 
@@ -261,8 +266,8 @@ registry, and Housekeeper's own operation manifest. Detector ids:
 - `home.not_found`
 - `home.scan_budget_hit`
 - `home.clean`
-- `plugin.cache_referenced_by_hook` (v0.2.0-alpha)
-- `housekeeper.stale_lock` (v0.2.0-alpha)
+- `plugin.cache_referenced_by_hook` (v0.2.0-beta)
+- `housekeeper.stale_lock` (v0.2.0-beta)
 
 Hygiene and state findings (large logs, zombie state, corrupt backups,
 drift directories, file-history age) are deferred to v0.2 alongside the
@@ -281,11 +286,10 @@ Shipped:
 - Optional SessionStart prevention hook (see above)
 - CLI `--help` and `--version`
 - GitHub Pages product site and CI matrix on Ubuntu + macOS × Node 20 + 22
-- **v0.2.0-alpha: snapshot-backed `clean --confirm --yes`** for `plugin.cache_unreferenced` (outside-grace plugin cache versions). Includes atomic write-temp+rename+fsync snapshot protocol, per-operation budget (50 files / 10 MiB), per-detector safe-mode limits, concurrency lockfile, and operation manifests under `<home>/.claude/housekeeper/operations/`.
+- **v0.2.0-beta: snapshot-backed `clean --confirm --yes` and `rollback <id> --confirm --yes`** for `plugin.cache_unreferenced` (outside-grace plugin cache versions). Includes atomic write-temp+rename+fsync snapshot protocol, per-operation budget (50 files / 10 MiB), per-detector safe-mode limits, concurrency lockfile, rollback dry-run plans, and operation manifests under `<home>/.claude/housekeeper/operations/`.
 
 Coming:
 
-- `rollback <id>` restore flow (Phase 8 — manifests exist; CLI not yet wired)
 - Interrupted-operation recovery via `rollback <id>` (Phase 9)
 - Broaden the cleanable set beyond `plugin.cache_unreferenced` (registry overrides, hook fragments) in v0.2.x patches
 - Local learning from false positives, protected paths, accepted plans, and rollback outcomes
