@@ -310,14 +310,15 @@ block    not allowed under current evidence</pre>
         <h2>Status</h2>
         <div class="status">
           <div>
-            <strong>Shipped — v0.1.0</strong>
+            <strong>Shipped</strong>
             <ul>
-              <li>Read-only <code>diagnose</code>, <code>plan</code>, and <code>verify</code></li>
+              <li>Read-only <code>diagnose</code>, <code>plan</code>, and <code>verify</code> with <code>--help</code> and <code>--version</code></li>
               <li>Stance-first report grammar with 8 stances and 16 fixture goldens</li>
               <li>Surface classification on every finding (9 axes + per-detector safe-mode limits)</li>
               <li><code>--safe</code> posture and <code>--redact</code> privacy mode</li>
               <li>Self-failure read-only degradation</li>
               <li>Stable JSON schema (<code>schemaVersion: "0.1"</code>) with <code>findings[].targetPath</code></li>
+              <li>Optional SessionStart prevention hook (opt-in via <code>settings.json</code>)</li>
               <li>Claude plugin slash command and standalone Node CLI</li>
               <li>CI matrix: Ubuntu + macOS × Node 20 + 22</li>
             </ul>
@@ -325,11 +326,10 @@ block    not allowed under current evidence</pre>
           <div>
             <strong>Roadmap</strong>
             <ul>
-              <li>SessionStart prevention hook (warn before mid-session failures)</li>
-              <li>More precise settings schema validation</li>
-              <li>Non-interactive subagent dispatch smoketest in <code>verify</code></li>
               <li>Snapshot-backed <code>clean</code> with one-line rollback output</li>
               <li><code>rollback &lt;id&gt;</code> restore flow</li>
+              <li>More precise settings schema validation</li>
+              <li>Non-interactive subagent dispatch smoketest in <code>verify</code></li>
               <li>Local learning from accepted plans and false positives</li>
             </ul>
           </div>

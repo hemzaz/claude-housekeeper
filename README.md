@@ -127,6 +127,38 @@ the tested platform matrix and
 [docs/schema-stability.md](docs/schema-stability.md) for the stable
 JSON fields the `--json` output guarantees.
 
+## SessionStart Prevention Hook
+
+Housekeeper ships an optional SessionStart hook at `hooks/session-start.mjs`
+that runs `diagnose --safe --json` whenever a Claude Code session begins
+and prints a one-line stderr warning if any `block` or `probe` findings are
+present. It is quiet for routine `inform`/`watch`/`review` state, exits 0
+in every case (it must never block session start), and times out at 5
+seconds.
+
+Per `docs/mode-doctrine.md` it must be installed by the user explicitly;
+Housekeeper does not auto-install hooks. Add to your `settings.json`:
+
+```jsonc
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node /absolute/path/to/claude-housekeeper/hooks/session-start.mjs"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Set `HOUSEKEEPER_SESSION_HOOK=off` in the environment to silence the hook
+without removing the configuration.
+
 ## Safety Model
 
 Housekeeper follows these rules:
@@ -222,7 +254,7 @@ knowledge layer.
 
 ## Roadmap
 
-Shipped in v0.1.0:
+Shipped:
 
 - Safe out-of-band first wedge for broken hooks, plugin cache drift, and local registry shadow
 - Stance-first report format with eight stances
@@ -230,13 +262,14 @@ Shipped in v0.1.0:
 - Stable JSON schema (`schemaVersion: "0.1"`) including `findings[].targetPath`
 - `--safe` posture and `--redact` privacy mode
 - Self-failure read-only degradation
+- Optional SessionStart prevention hook (see above)
+- CLI `--help` and `--version`
 - GitHub Pages product site and CI matrix on Ubuntu + macOS × Node 20 + 22
 
 Coming:
 
 - Snapshot-backed `clean` with one-line rollback output
 - `rollback <id>` restore flow
-- SessionStart prevention hook for collisions, stale hooks, corrupt backups, and zombie state
 - Local learning from false positives, protected paths, accepted plans, and rollback outcomes
 - More precise settings schema checks
 - A non-interactive subagent dispatch smoketest
