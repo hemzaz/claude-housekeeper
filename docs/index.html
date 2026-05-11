@@ -321,15 +321,15 @@ block    not allowed under current evidence</pre>
               <li>Optional SessionStart prevention hook (opt-in via <code>settings.json</code>)</li>
               <li>Claude plugin slash command and standalone Node CLI</li>
               <li>CI matrix: Ubuntu + macOS × Node 20 + 22</li>
-              <li><strong>v0.2.0-beta:</strong> snapshot-backed <code>clean --confirm --yes</code> and <code>rollback &lt;id&gt; --confirm --yes</code> for <code>plugin.cache_unreferenced</code> (outside-grace plugin cache versions). Atomic snapshot protocol, rollback dry-run plans, per-operation budget (50 files / 10 MiB), concurrency lockfile, operation manifests.</li>
-              <li><strong>v0.2.0-beta (Phase 9):</strong> interrupted-operation recovery via <code>rollback --abort &lt;id&gt;</code>, SessionStart hook surfacing non-terminal manifests, legacy pre-v0.2 manifest detection, and recovery hints on audit findings.</li>
+              <li><strong>v0.2.0-alpha.1:</strong> snapshot-backed <code>clean --confirm --yes</code> and <code>rollback &lt;id&gt; --confirm --yes</code> for <code>plugin.cache_unreferenced</code> (outside-grace plugin cache versions). Atomic snapshot protocol, rollback dry-run plans, per-operation budget (50 files / 10 MiB), concurrency lockfile, operation manifests.</li>
+              <li><strong>v0.2.0-beta.1 (Phase 9):</strong> interrupted-operation recovery via <code>rollback --abort &lt;id&gt;</code>, SessionStart hook surfacing non-terminal manifests, legacy pre-v0.2 manifest detection, and recovery hints on audit findings.</li>
+              <li><strong>v0.2.0-beta.1 (Phase 10):</strong> broadened cleanable set with a <code>file-unlink</code> mutation kind. <code>housekeeper.stale_lock</code> and <code>registry.local_command_identical</code> join <code>plugin.cache_unreferenced</code> as cleanable detectors. See the <a href="https://github.com/hemzaz/claude-housekeeper/blob/main/docs/migration-v0.1-to-v0.2.md">v0.1 → v0.2 migration guide</a>.</li>
             </ul>
           </div>
           <div>
             <strong>Roadmap</strong>
             <ul>
-              <li>Broaden the cleanable set beyond <code>plugin.cache_unreferenced</code> in v0.2.x (registry overrides, hook fragments)</li>
-              <li>More precise settings schema validation</li>
+              <li>More precise settings schema validation (<code>settings.invalid_json</code>, <code>settings.hook_path_dangling</code>, <code>settings.mcp_command_missing</code>)</li>
               <li>Non-interactive subagent dispatch smoketest in <code>verify</code></li>
               <li>Local learning from accepted plans and false positives</li>
               <li><code>harden --confirm</code> for settings and hook patching (v0.3)</li>

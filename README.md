@@ -31,16 +31,20 @@ claude-housekeeper clean --confirm                 # refuses without --yes
 claude-housekeeper clean --confirm --yes \
     --target=plugin.cache_unreferenced \
     --path=<absolute path>                         # mutates a single plugin cache
-                                                   # version (v0.2.0-beta)
+                                                   # version (v0.2.0-beta.1)
 claude-housekeeper harden                          # planned; refuses mutation
 claude-housekeeper rollback <id> --dry-run         # shows restore plan
 claude-housekeeper rollback <id> --confirm --yes   # restores from snapshot
 ```
 
-Only `plugin.cache_unreferenced` (plugin cache versions OUTSIDE the 7-day
-grace window) is cleanable in v0.2.0-beta. Everything else routes to
-`refused[]` with a structured reason — see `docs/design/clean-design.md` for
-the full taxonomy.
+Three detectors are cleanable in v0.2.0-beta.1: `plugin.cache_unreferenced`
+(plugin cache versions OUTSIDE the 7-day grace window),
+`housekeeper.stale_lock` (concurrency lockfile older than 30 min), and
+`registry.local_command_identical` (local command byte-identical to its
+plugin counterpart). Everything else routes to `refused[]` with a
+structured reason — see [`docs/design/clean-design.md`](docs/design/clean-design.md)
+for the full taxonomy and the "Current Checks" table below for the
+per-detector status.
 
 Scopes:
 
@@ -187,7 +191,7 @@ Housekeeper follows these rules:
 
 `diagnose`, `plan`, and `verify` never modify files. `clean --confirm --yes`
 and `rollback <id> --confirm --yes` are the only mutation paths in
-v0.2.0-beta; both require Housekeeper-owned manifests and rollback proof.
+v0.2.0-beta.1; both require Housekeeper-owned manifests and rollback proof.
 `harden` remains visible but refuses mutation.
 
 Future action planning will use stance vocabulary:
@@ -246,32 +250,48 @@ Pattern support is deliberately small: exact paths, directories, `dir/*`, and `d
 
 The v0.1 first wedge covers settings parse, hook path analysis, plugin
 registry parse, plugin cache version map, the local command/skill
-registry, and Housekeeper's own operation manifest. Detector ids:
+registry, and Housekeeper's own operation manifest. The table below
+marks each detector's cleanable status in v0.2.0.
 
-- `settings.invalid_json`
-- `settings.hook_path_dangling`
-- `settings.hook_command_shell_ambiguous`
-- `settings.mcp_command_missing`
-- `plugin.expected_orphan`
-- `plugin.cache_unreferenced`
-- `plugin.duplicate_registration`
-- `plugin.cache_size`
-- `registry.local_skill_shadow`
-- `registry.local_command_identical`
-- `registry.local_command_diverged`
-- `registry.broken_frontmatter`
-- `housekeeper.interrupted_operation`
-- `housekeeper.config_invalid`
-- `housekeeper.operations_unreadable`
-- `home.not_found`
-- `home.scan_budget_hit`
-- `home.clean`
-- `plugin.cache_referenced_by_hook` (v0.2.0-beta)
-- `housekeeper.stale_lock` (v0.2.0-beta)
+Status legend:
+
+- **cleanable** — `clean --confirm --yes` will act on this finding.
+- **planned** — read-only today; will move to cleanable in a future
+  v0.2.x patch or v0.3 phase.
+- **never** — informational or judgment-laden by design; will not
+  become cleanable. Surface only.
+
+| Detector id | Status in v0.2.0 |
+|---|---|
+| `settings.invalid_json` | planned |
+| `settings.hook_path_dangling` | planned |
+| `settings.hook_command_shell_ambiguous` | planned |
+| `settings.mcp_command_missing` | planned |
+| `plugin.expected_orphan` | never (locked decision Q-USER-3) |
+| `plugin.cache_unreferenced` | **cleanable** |
+| `plugin.cache_referenced_by_hook` (v0.2.0-beta) | never (protected by hook reference) |
+| `plugin.duplicate_registration` | never (which duplicate to keep is a judgment call) |
+| `plugin.cache_size` | never (size is a signal, not a verdict) |
+| `registry.local_skill_shadow` | planned |
+| `registry.local_command_identical` | **cleanable** (v0.2.0-beta.1) |
+| `registry.local_command_diverged` | never (intent-laden) |
+| `registry.broken_frontmatter` | planned |
+| `housekeeper.interrupted_operation` | recovery via `rollback <id>` or `rollback --abort <id>` |
+| `housekeeper.config_invalid` | planned |
+| `housekeeper.operations_unreadable` | never (informational) |
+| `housekeeper.stale_lock` (v0.2.0-beta) | **cleanable** (v0.2.0-beta.1) |
+| `home.not_found` | never (informational) |
+| `home.scan_budget_hit` | never (informational) |
+| `home.clean` | never (meta-detector; informational) |
 
 Hygiene and state findings (large logs, zombie state, corrupt backups,
-drift directories, file-history age) are deferred to v0.2 alongside the
+drift directories, file-history age) are deferred alongside the
 knowledge layer.
+
+See [`CHANGELOG.md`](CHANGELOG.md) for the full per-tag delta,
+[`docs/migration-v0.1-to-v0.2.md`](docs/migration-v0.1-to-v0.2.md) for
+the v0.1 → v0.2 upgrade guide, and [`docs/threat-model.md`](docs/threat-model.md)
+for the single-user trust boundaries that back the mutation surface.
 
 ## Roadmap
 
@@ -286,14 +306,14 @@ Shipped:
 - Optional SessionStart prevention hook (see above)
 - CLI `--help` and `--version`
 - GitHub Pages product site and CI matrix on Ubuntu + macOS × Node 20 + 22
-- **v0.2.0-beta: snapshot-backed `clean --confirm --yes` and `rollback <id> --confirm --yes`** for `plugin.cache_unreferenced` (outside-grace plugin cache versions). Includes atomic write-temp+rename+fsync snapshot protocol, per-operation budget (50 files / 10 MiB), per-detector safe-mode limits, concurrency lockfile, rollback dry-run plans, and operation manifests under `<home>/.claude/housekeeper/operations/`.
-- **v0.2.0-beta (Phase 9):** interrupted-operation recovery. `rollback --abort <id>` cancels a `snapshot_taken`/`planned` operation; `SessionStart` hook surfaces non-terminal manifests; legacy pre-v0.2 manifests are detected and reported; audit findings include recovery hints (`rollback <id>` or `rollback --abort <id>`).
+- **v0.2.0-alpha.1: snapshot-backed `clean --confirm --yes` and `rollback <id> --confirm --yes`** for `plugin.cache_unreferenced` (outside-grace plugin cache versions). Includes atomic write-temp+rename+fsync snapshot protocol, per-operation budget (50 files / 10 MiB), per-detector safe-mode limits, concurrency lockfile, rollback dry-run plans, and operation manifests under `<home>/.claude/housekeeper/operations/`.
+- **v0.2.0-beta.1 (Phase 9):** interrupted-operation recovery. `rollback --abort <id>` cancels a `snapshot_taken`/`planned` operation; `SessionStart` hook surfaces non-terminal manifests; legacy pre-v0.2 manifests are detected and reported; audit findings include recovery hints (`rollback <id>` or `rollback --abort <id>`).
+- **v0.2.0-beta.1 (Phase 10):** broadened cleanable set with a `file-unlink` mutation kind. `housekeeper.stale_lock` and `registry.local_command_identical` join `plugin.cache_unreferenced` as cleanable detectors.
 
 Coming:
 
-- Broaden the cleanable set beyond `plugin.cache_unreferenced` (registry overrides, hook fragments) in v0.2.x patches — see `notes/HANDOFF-PHASE-10.md`
 - Local learning from false positives, protected paths, accepted plans, and rollback outcomes
-- More precise settings schema checks
+- More precise settings schema checks (`settings.invalid_json`, `settings.hook_path_dangling`, `settings.mcp_command_missing`)
 - `harden --confirm` (settings/hook patching) — v0.3
 
 ## Known Limitations
