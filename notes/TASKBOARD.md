@@ -422,12 +422,12 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done · `[!]` blocked
   - Verify: Pages preview renders; no broken links to docs that don't
     exist.
 
-- [ ] **T-505** Walk through `docs/launch-checklist.md`
+- [x] **T-505** Walk through `docs/launch-checklist.md`
   - For each bullet, link to the closing artifact (test, doc, or commit).
   - Verify: every "Required Before Public Announcement" item is checked
     or has an explicit waiver in `docs/readiness-gap-ledger.md`.
 
-- [ ] **T-506** Tag `v0.1.0`
+- [x] **T-506** Tag `v0.1.0`
   - Only after T-505 is fully checked.
   - Verify: `git tag v0.1.0` + push; release notes match
     `docs/launch-checklist.md` "Suggested First Release Notes".
@@ -563,7 +563,7 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done · `[!]` blocked
   - Verify: `test/fixtures.test.mjs` asserts
     `card.mode_expectations.<mode> === report.mode` for every fixture.
 
-- [ ] **T-X15** README roadmap update
+- [x] **T-X15** README roadmap update
   - Surfaced by PR #10 (Tech writer). README "Roadmap" still lists
     "Safe out-of-band first wedge" as future even though Phase 0–4 have
     shipped. Trivial copy edit; do at v0.1.0 tag time alongside T-506
