@@ -24,6 +24,8 @@ const VALID_COMMANDS = new Set([
   "rollback"
 ]);
 
+const OPERATION_ID_PATTERN = /^op_[0-9]{14}_[0-9a-f]{8}$/;
+
 const HELP_TEXT = `claude-housekeeper — read-only Claude Code home inspection.
 
 Usage:
@@ -35,7 +37,7 @@ Commands:
   verify              Run live Claude CLI smoketest probes.
   clean               Refuses mutation in v0.1 (snapshot/rollback not yet shipped).
   harden              Refuses mutation in v0.1.
-  rollback <id>       Refuses mutation in v0.1.
+  rollback <id>       Restore a named Housekeeper operation snapshot.
 
 Options:
   --json              Print the machine-readable report (stable schema 0.1).
@@ -45,6 +47,7 @@ Options:
   --home=<path>       Claude home root (default: $CLAUDE_HOME or ~/.claude).
   --config=<path>     Override the housekeeper config path.
   --max-files=<n>     Bound the projects-tree walk; emits home.scan_budget_hit if hit.
+  --dry-run           For rollback, print the rollback plan without changing files.
   --confirm           Arm the mutation path for clean. Without this flag, clean
                         refuses mutation (dry-run only). REQUIRED to actually
                         mutate, but mutation is still blocked until --yes is passed.
@@ -63,6 +66,7 @@ Examples:
   claude-housekeeper plan --scope=registry      # local commands and skills only
   claude-housekeeper diagnose --safe --redact   # safe posture, share-safe output
   claude-housekeeper diagnose --json | jq .
+  claude-housekeeper rollback op_20260511143022_a1b2c3d4 --dry-run
 
 Docs: https://hemzaz.github.io/claude-housekeeper
 `;
@@ -93,6 +97,7 @@ function parseArgs(argv) {
     yes: false,
     safe: false,
     redact: false,
+    dryRun: false,
     scope: "all",
     home: process.env.CLAUDE_HOME || homedir(),
     configPath: null,
@@ -106,6 +111,7 @@ function parseArgs(argv) {
     if (arg === "--json") options.json = true;
     else if (arg === "--confirm") options.confirm = true;
     else if (arg === "--yes") options.yes = true;
+    else if (arg === "--dry-run") options.dryRun = true;
     else if (arg === "--safe") options.safe = true;
     else if (arg === "--redact") options.redact = true;
     else if (arg.startsWith("--scope=")) options.scope = arg.slice("--scope=".length);
@@ -313,7 +319,7 @@ function runHarden() {
 
 function runRollback(options) {
   if (!options.rollbackId) {
-    fail("rollback requires a backup id, for example: rollback 2026-05-09-plugin-cleanup", 2);
+    fail("rollback requires an operation id, for example: rollback op_20260511143022_a1b2c3d4", 2);
     return;
   }
   fail("No files were changed. rollback is planned, and this version has not recorded any cleanups.", 2);
@@ -441,6 +447,8 @@ try {
   } else if (options.command === "clean" && options.confirm && !options.yes) {
     // Flag gate: --confirm without --yes → consent refused, no home needed.
     fail("Refusing mutation: --yes not passed. Pass --confirm --yes to skip the prompt and apply.", 2);
+  } else if (options.command === "rollback" && options.rollbackId && !OPERATION_ID_PATTERN.test(options.rollbackId)) {
+    fail("Invalid rollback operation id. Expected format: op_<YYYYMMDDHHMMSS>_<8hex>.", 2);
   } else {
     options.home = resolveClaudeHome(options.home);
     if (!existsSync(options.home)) {

@@ -208,3 +208,36 @@ test("--help shows --target and --path flags under clean", () => {
   assert.match(result.stdout, /--path=/);
   assert.match(result.stdout, /REQUIRED when --confirm is set/);
 });
+
+// ── T-800 rollback parser tests ──────────────────────────────────────────────
+
+test("rollback help documents op id, dry-run, confirm, and yes flags", () => {
+  const result = runCli(["rollback", "--help"]);
+  assert.equal(result.status, 0);
+  assert.match(result.stdout, /rollback <id>/);
+  assert.match(result.stdout, /op_20260511143022_a1b2c3d4/);
+  assert.match(result.stdout, /--dry-run/);
+  assert.match(result.stdout, /--confirm/);
+  assert.match(result.stdout, /--yes/);
+});
+
+test("rollback rejects invalid op id before checking Claude home", () => {
+  const missingHome = path.join(tmpdir(), "ck-missing-home-for-invalid-id");
+  const result = runCli(["rollback", "not-an-op-id", `--home=${missingHome}`]);
+  assert.equal(result.status, 2, `expected exit 2, got ${result.status}`);
+  assert.match(result.stderr, /Invalid rollback operation id/);
+  assert.doesNotMatch(result.stderr, /Claude home does not exist/);
+});
+
+test("rollback accepts canonical op id and --dry-run before handler implementation", () => {
+  const missingHome = path.join(tmpdir(), "ck-missing-home-for-valid-id");
+  const result = runCli([
+    "rollback",
+    "op_20260511143022_a1b2c3d4",
+    "--dry-run",
+    `--home=${missingHome}`
+  ]);
+  assert.equal(result.status, 2, `expected exit 2, got ${result.status}`);
+  assert.match(result.stderr, /Claude home does not exist/);
+  assert.doesNotMatch(result.stderr, /Unknown argument: --dry-run/);
+});
