@@ -190,11 +190,31 @@ test("verified operation manifests do not emit a finding", () => {
   const home = fixtureHome();
   const opsDir = path.join(home, "housekeeper/operations");
   mkdirSync(opsDir, { recursive: true });
-  writeJson(path.join(opsDir, "op_done.json"), { status: "verified" });
+  writeJson(path.join(opsDir, "op_done.json"), { schemaVersion: "0.2", status: "verified" });
 
   const report = assembleReport(home);
   const interrupted = report.findings.find((f) => f.id === "housekeeper.interrupted_operation");
   assert.equal(interrupted, undefined);
+});
+
+test("legacy operation manifests emit a legacy interrupted-operation finding", () => {
+  const home = fixtureHome();
+  const opsDir = path.join(home, "housekeeper/operations");
+  mkdirSync(opsDir, { recursive: true });
+  const opId = "op_legacy";
+  writeJson(path.join(opsDir, `${opId}.json`), {});
+
+  const report = assembleReport(home);
+  const interrupted = report.findings.find((f) => f.id === "housekeeper.interrupted_operation");
+  assert.ok(interrupted, "interrupted finding must exist");
+  assert.equal(interrupted.nextAllowedStep, `rollback ${opId}`);
+  assert.match(interrupted.summary, /legacy operation manifest \(pre-v0\.2\)/i);
+  assert.match(interrupted.summary, /status assumed planned/i);
+  assert.deepEqual(interrupted.evidence.structural, [
+    `operation id ${opId} exists`,
+    "manifest schemaVersion is legacy",
+    "status assumed planned"
+  ]);
 });
 
 test("interrupted applied operation points at rollback command", () => {
