@@ -141,6 +141,35 @@ test("array-form installed plugin registry marks matching cache version as live"
   assert.equal(ids.includes("plugin.cache_unreferenced"), false);
 });
 
+test("plugin.cache_size evidence ranks top-3 plugins by total bytes", () => {
+  const home = fixtureHome();
+  // Three plugins; "bigplugin" should dominate, "midplugin" second, "smallplugin" third.
+  const cases = [
+    { market: "marketA", plugin: "bigplugin", version: "1.0.0", bytes: 5000 },
+    { market: "marketA", plugin: "bigplugin", version: "1.1.0", bytes: 6000 },
+    { market: "marketB", plugin: "midplugin", version: "2.0.0", bytes: 3000 },
+    { market: "marketC", plugin: "smallplugin", version: "0.1.0", bytes: 500 }
+  ];
+  for (const { market, plugin, version, bytes } of cases) {
+    const dir = path.join(home, "plugins/cache", market, plugin, version);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(path.join(dir, "data.bin"), Buffer.alloc(bytes));
+  }
+
+  const report = assembleReport(home, { scope: "plugins" });
+  const cacheSize = report.findings.find((f) => f.id === "plugin.cache_size");
+  assert.ok(cacheSize, "plugin.cache_size finding emitted");
+
+  const structural = cacheSize.evidence.structural;
+  // Header lines are still present and stable.
+  assert.match(structural[0], /plugin cache contains 4 version directories/);
+  assert.match(structural[1], /total size/);
+  // Top-3 lines are ordered by total bytes desc.
+  assert.match(structural[2], /largest: marketA\/bigplugin .* across 2 versions/);
+  assert.match(structural[3], /largest: marketB\/midplugin .* across 1 version/);
+  assert.match(structural[4], /largest: marketC\/smallplugin .* across 1 version/);
+});
+
 // ---------- T-208: housekeeper.interrupted_operation ----------
 
 test("interrupted operation manifest yields a single block finding", () => {

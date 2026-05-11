@@ -565,6 +565,28 @@ function detectPluginCacheSize(context) {
   }));
   if (sizes.length === 0) return null;
   const total = sizes.reduce((sum, item) => sum + item.sizeBytes, 0);
+
+  // Group by `<market>/<plugin>` so the user can see which plugins own the
+  // bulk of the cache budget. Rank by total bytes, take the top 3.
+  const grouped = new Map();
+  for (const entry of sizes) {
+    const rel = path.relative(cacheRoot, entry.path).split(path.sep);
+    if (rel.length < 2) continue;
+    const key = `${rel[0]}/${rel[1]}`;
+    const prior = grouped.get(key) || { totalBytes: 0, versionCount: 0 };
+    grouped.set(key, {
+      totalBytes: prior.totalBytes + entry.sizeBytes,
+      versionCount: prior.versionCount + 1
+    });
+  }
+  const top = [...grouped.entries()]
+    .sort((a, b) => b[1].totalBytes - a[1].totalBytes)
+    .slice(0, 3)
+    .map(([key, { totalBytes, versionCount }]) => {
+      const versionWord = versionCount === 1 ? "version" : "versions";
+      return `largest: ${key} (${formatBytes(totalBytes)} across ${versionCount} ${versionWord})`;
+    });
+
   return {
     id: "plugin.cache_size",
     class: "orientation",
@@ -574,7 +596,8 @@ function detectPluginCacheSize(context) {
     evidence: {
       structural: [
         `plugin cache contains ${sizes.length} version directories`,
-        `total size ${formatBytes(total)}`
+        `total size ${formatBytes(total)}`,
+        ...top
       ]
     },
     missingKeys: [],
