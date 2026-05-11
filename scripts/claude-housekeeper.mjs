@@ -14,6 +14,15 @@ import {
   PlanDriftError,
   NotImplementedError
 } from "./lib/clean-plan.mjs";
+import {
+  composeRollbackPlan,
+  validateRollbackPlan,
+  executeRollbackPlan,
+  LockHeldError as RollbackLockHeldError,
+  PlanDriftError as RollbackPlanDriftError,
+  RollbackNotImplementedError,
+  SnapshotIntegrityError
+} from "./lib/rollback-plan.mjs";
 
 const VALID_COMMANDS = new Set([
   "diagnose",
@@ -153,6 +162,28 @@ function printJson(value) {
   console.log(JSON.stringify(value, null, 2));
 }
 
+function printRollbackPlan(plan, { dryRun = false } = {}) {
+  console.log("HOUSEKEEPER ROLLBACK");
+  if (dryRun) console.log("DRY-RUN — no files changed.");
+  console.log(`Operation: ${plan.opId}`);
+  console.log(`Files to restore: ${plan.operations.length}`);
+  console.log("");
+  for (const op of plan.operations) {
+    console.log(`  restore  ${op.originalPath}`);
+    console.log(`    from   ${op.snapshotPath}`);
+  }
+}
+
+function printRollbackRefusals(plan) {
+  console.log("HOUSEKEEPER ROLLBACK");
+  console.log(`Operation: ${plan.opId}`);
+  for (const refusal of plan.refused) {
+    console.log(`Refusing: ${refusal.reason}`);
+    if (refusal.targetPath) console.log(`path: ${refusal.targetPath}`);
+    console.log(`Reason: ${refusal.message}`);
+  }
+}
+
 function runDiagnose(options) {
   const mode = pickMode(options);
   const report = assembleReport(options.home, {
@@ -269,9 +300,10 @@ async function runClean(options) {
 
     const op = plan.operations[0];
     console.log("HOUSEKEEPER CLEAN");
-    console.log(`1 operation planned. Op id: ${manifest.opId}\n`);
+    const opId = manifest.id || manifest.opId;
+    console.log(`1 operation planned. Op id: ${opId}\n`);
     console.log(`  ${op.mutationKind}  ${op.targetPath}  (${formatBytes(op.estimatedBytes)})\n`);
-    console.log(`  snapshot taken    → ${options.home}/housekeeper/snapshots/${manifest.opId}/...`);
+    console.log(`  snapshot taken    → ${options.home}/housekeeper/snapshots/${opId}/...`);
     console.log(`  applied           → directory removed`);
     console.log(`  verified          → no residual files`);
     console.log("");
@@ -281,7 +313,7 @@ async function runClean(options) {
     console.log("  Run /reload-plugins in any active Claude Code session to drop the");
     console.log("  cache reference. The plugins/data/ directory was preserved.");
     console.log("");
-    console.log(`To roll back: claude-housekeeper rollback ${manifest.opId}`);
+    console.log(`To roll back: claude-housekeeper rollback ${opId}`);
 
     process.exitCode = manifest.status === "verified" ? 0 : 1;
   } catch (err) {
@@ -317,12 +349,91 @@ function runHarden() {
   fail("No files were changed. harden is planned, but prevention hooks must be reviewed before installation.", 2);
 }
 
-function runRollback(options) {
+async function runRollback(options) {
   if (!options.rollbackId) {
     fail("rollback requires an operation id, for example: rollback op_20260511143022_a1b2c3d4", 2);
     return;
   }
-  fail("No files were changed. rollback is planned, and this version has not recorded any cleanups.", 2);
+
+  try {
+    const plan = await composeRollbackPlan(options.home, options.rollbackId);
+
+    if (plan.refused.length > 0) {
+      if (options.json) printJson({ refused: plan.refused });
+      else printRollbackRefusals(plan);
+      process.exitCode = 2;
+      return;
+    }
+
+    if (options.dryRun) {
+      if (options.json) printJson({ plan });
+      else printRollbackPlan(plan, { dryRun: true });
+      process.exitCode = 0;
+      return;
+    }
+
+    if (!options.confirm) {
+      if (options.json) printJson({ plan });
+      else printRollbackPlan(plan);
+      fail("Refusing rollback: --confirm not passed. Pass --confirm --yes to restore files.", 2);
+      return;
+    }
+
+    if (!options.yes) {
+      if (options.json) printJson({ plan });
+      else printRollbackPlan(plan);
+      fail("Refusing rollback: --yes not passed. Pass --confirm --yes to restore files.", 2);
+      return;
+    }
+
+    const validated = await validateRollbackPlan(plan, options.home);
+    const manifest = await executeRollbackPlan(validated, options.home);
+
+    if (options.json) {
+      printJson({ manifest });
+    } else {
+      console.log("HOUSEKEEPER ROLLBACK");
+      console.log(`Operation: ${manifest.id}`);
+      console.log(`Restored files: ${manifest.files.filter((entry) => entry.rollbackVerified).length}`);
+      console.log("");
+      console.log("DONE. Operation rolled back.");
+    }
+    process.exitCode = manifest.status === "rolled_back" ? 0 : 1;
+  } catch (err) {
+    if (err instanceof RollbackLockHeldError) {
+      if (options.json) {
+        printJson({ error: "lock-held", pid: err.lockManifest.pid, hostname: err.lockManifest.hostname });
+      } else {
+        fail(`Lock held by pid ${err.lockManifest.pid} on ${err.lockManifest.hostname} until ${err.lockManifest.stalenessAt}. If the prior run is no longer active, delete ${options.home}/housekeeper/lock and retry.`, 2);
+      }
+      return;
+    }
+    if (err instanceof RollbackPlanDriftError) {
+      if (options.json) {
+        printJson({ error: "rollback-plan-drift", targetPath: err.targetPath, expected: err.expectedHash, actual: err.actualHash });
+      } else {
+        fail("Rollback plan drift detected: the home state changed between plan composition and execution. Re-run `rollback --dry-run` to inspect the latest state.", 2);
+      }
+      return;
+    }
+    if (err instanceof SnapshotIntegrityError) {
+      if (options.json) {
+        printJson({ error: "snapshot-integrity", snapshotPath: err.snapshotPath, expected: err.expectedHash, actual: err.actualHash });
+      } else {
+        fail(`Snapshot integrity check failed for ${err.snapshotPath}. Rollback refused.`, 2);
+      }
+      return;
+    }
+    if (err instanceof RollbackNotImplementedError) {
+      if (options.json) {
+        printJson({ error: "rollback-kind-not-implemented", kind: err.kind });
+      } else {
+        fail(`Rollback operation kind "${err.kind}" is not implemented in v0.2.0.`, 2);
+      }
+      return;
+    }
+    throw err;
+  }
 }
 
 function runProbe(label, command, args, options = {}) {
@@ -458,7 +569,7 @@ try {
     else if (options.command === "clean") await runClean(options);
     else if (options.command === "verify") runVerify(options);
     else if (options.command === "harden") runHarden(options);
-    else if (options.command === "rollback") runRollback(options);
+    else if (options.command === "rollback") await runRollback(options);
   }
 } catch (error) {
   fail(error.message, 2);
