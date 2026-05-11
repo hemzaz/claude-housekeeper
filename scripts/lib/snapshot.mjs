@@ -10,10 +10,60 @@ import {
   lstat,
   readlink,
   readFile,
-  unlink
+  unlink,
+  stat
 } from "node:fs/promises";
 import { join, basename } from "node:path";
 import os from "node:os";
+import { loadConfig, pathMatchesProtection } from "./policy.mjs";
+
+// ── Budget constants (T-603) ──────────────────────────────────────────────────
+
+/** Maximum number of files allowed in a single snapshot operation. */
+export const MAX_OPERATION_FILES = 50;
+
+/** Maximum total bytes allowed in a single snapshot operation (10 MiB). */
+export const MAX_OPERATION_BYTES = 10 * 1024 * 1024;
+
+// ── Named error classes ───────────────────────────────────────────────────────
+
+/**
+ * Thrown by takeSnapshot when one or more targets match a doNotTouch/protect
+ * policy rule. This is a hard boundary; no caller flag can override it.
+ * Per docs/snapshot-architecture.md §7 and docs/mode-doctrine.md §5 Forbidden.
+ */
+export class SnapshotRefusedError extends Error {
+  constructor(blockedByProtection) {
+    const paths = blockedByProtection.map((b) => b.path).join(", ");
+    super(`Snapshot refused: protected path(s): ${paths}`);
+    this.name = "SnapshotRefusedError";
+    this.code = "SNAPSHOT_REFUSED_PROTECTED";
+    this.reason = "protected-path";
+    this.blockedByProtection = blockedByProtection;
+  }
+}
+
+/**
+ * Thrown by takeSnapshot when the target set exceeds the per-operation budget.
+ * Per docs/snapshot-architecture.md §9.
+ */
+export class SnapshotBudgetError extends Error {
+  constructor(limit, actual) {
+    const filePart = actual.files > limit.files
+      ? `${actual.files} files (limit ${limit.files})`
+      : null;
+    const bytePart = actual.bytes > limit.bytes
+      ? `${actual.bytes} bytes (limit ${limit.bytes})`
+      : null;
+    const detail = [filePart, bytePart].filter(Boolean).join("; ");
+    super(`Snapshot refused: budget exceeded — ${detail}`);
+    this.name = "SnapshotBudgetError";
+    this.code = "SNAPSHOT_REFUSED_BUDGET";
+    this.reason = "budget-exceeded";
+    this.limit = limit;
+    this.actual = actual;
+  }
+}
 
 export const SCHEMA_VERSION_V2 = "0.2";
 
@@ -218,8 +268,43 @@ export async function takeSnapshot(home, opts = {}) {
   const consentSummary = opts.consentSummary || "";
   const housekeeperVersion = opts.housekeeperVersion || "0.2.0";
 
-  // TODO: T-602 protected path check
-  // TODO: T-603 budget enforcement
+  // T-603 budget enforcement — checked FIRST (cheaper; avoids policy I/O on
+  // oversized requests). File count is O(1); byte sum requires stat() per file.
+  if (targets.length > MAX_OPERATION_FILES) {
+    // Count-only refusal: skip byte sum — file count already exceeds limit.
+    throw new SnapshotBudgetError(
+      { files: MAX_OPERATION_FILES, bytes: MAX_OPERATION_BYTES },
+      { files: targets.length, bytes: 0 }
+    );
+  }
+  let totalBytes = 0;
+  for (const t of targets) {
+    const s = await stat(t);
+    totalBytes += s.size;
+  }
+  if (totalBytes > MAX_OPERATION_BYTES) {
+    throw new SnapshotBudgetError(
+      { files: MAX_OPERATION_FILES, bytes: MAX_OPERATION_BYTES },
+      { files: targets.length, bytes: totalBytes }
+    );
+  }
+
+  // T-602 protected-path check — checked AFTER budget (protection policy load
+  // requires config I/O; budget is pure arithmetic). Hard boundary: cannot be
+  // overridden by any caller flag per docs/snapshot-architecture.md §7.
+  const { rules } = loadConfig(home);
+  const blocked = [];
+  for (const target of targets) {
+    for (const rule of rules) {
+      if (rule.path && pathMatchesProtection(rule.path, target, home)) {
+        blocked.push({ path: target, rule: rule.path, reason: rule.reason });
+        break; // one match per target is sufficient
+      }
+    }
+  }
+  if (blocked.length > 0) {
+    throw new SnapshotRefusedError(blocked);
+  }
 
   const opId = generateOpId();
   const snapshotDir = join(home, ".claude", "housekeeper", "snapshots", opId);

@@ -4,7 +4,14 @@ import { createHash } from "node:crypto";
 import { mkdir, writeFile, readFile, access, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import os from "node:os";
-import { takeSnapshot, generateOpId } from "../scripts/lib/snapshot.mjs";
+import {
+  takeSnapshot,
+  generateOpId,
+  SnapshotRefusedError,
+  SnapshotBudgetError,
+  MAX_OPERATION_FILES,
+  MAX_OPERATION_BYTES
+} from "../scripts/lib/snapshot.mjs";
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -301,4 +308,142 @@ test("takeSnapshot twice: both operation manifests exist", async () => {
   const opsDir = join(home, ".claude", "housekeeper", "operations");
   assert.ok(await fileExists(join(opsDir, `${id1}.json`)), "first manifest");
   assert.ok(await fileExists(join(opsDir, `${id2}.json`)), "second manifest");
+});
+
+// ── T-602 — protected-path guard ──────────────────────────────────────────────
+
+test("T-602 negative: takeSnapshot throws SnapshotRefusedError when target matches doNotTouch rule", async () => {
+  const home = await makeSyntheticHome();
+  await writeFile(join(home, "protected.txt"), "sensitive");
+  // Write a doNotTouch rule covering the target file.
+  await mkdir(join(home, "housekeeper"), { recursive: true });
+  await writeFile(
+    join(home, "housekeeper", "config.json"),
+    JSON.stringify({
+      doNotTouch: [{ path: join(home, "protected.txt"), reason: "test protection rule" }]
+    })
+  );
+
+  const err = await takeSnapshot(home, {
+    targets: [join(home, "protected.txt")]
+  }).then(() => null, (e) => e);
+
+  assert.ok(err instanceof SnapshotRefusedError, "should throw SnapshotRefusedError");
+  assert.equal(err.reason, "protected-path");
+  assert.ok(Array.isArray(err.blockedByProtection), "blockedByProtection should be an array");
+  assert.equal(err.blockedByProtection.length, 1);
+  assert.equal(err.blockedByProtection[0].path, join(home, "protected.txt"));
+});
+
+test("T-602 negative: no snapshot files and no operation manifest written on protected-path refusal", async () => {
+  const home = await makeSyntheticHome();
+  await writeFile(join(home, "guarded.txt"), "guarded content");
+  await mkdir(join(home, "housekeeper"), { recursive: true });
+  await writeFile(
+    join(home, "housekeeper", "config.json"),
+    JSON.stringify({
+      doNotTouch: [{ path: join(home, "guarded.txt"), reason: "no-write" }]
+    })
+  );
+
+  try {
+    await takeSnapshot(home, { targets: [join(home, "guarded.txt")] });
+  } catch {
+    // expected
+  }
+
+  // No snapshot directory should exist.
+  const snapshotsDir = join(home, ".claude", "housekeeper", "snapshots");
+  assert.equal(await fileExists(snapshotsDir), false, "snapshots dir must not exist");
+  // No operation manifest should exist.
+  const operationsDir = join(home, ".claude", "housekeeper", "operations");
+  assert.equal(await fileExists(operationsDir), false, "operations dir must not exist");
+});
+
+test("T-602 positive: takeSnapshot succeeds when home has no protection rules", async () => {
+  const home = await makeSyntheticHome();
+  await writeFile(join(home, "safe.txt"), "safe content");
+  // No config file — loadConfig returns empty rules.
+
+  const { manifest } = await takeSnapshot(home, {
+    targets: [join(home, "safe.txt")]
+  });
+
+  assert.equal(manifest.status, "snapshot_taken");
+  assert.equal(manifest.files.length, 1);
+});
+
+// ── T-603 — budget enforcement ────────────────────────────────────────────────
+
+test("T-603 file-count: takeSnapshot throws SnapshotBudgetError when 51 files are targeted", async () => {
+  const home = await makeSyntheticHome();
+  const targets = [];
+  for (let i = 0; i < MAX_OPERATION_FILES + 1; i++) {
+    const p = join(home, `file${i}.txt`);
+    await writeFile(p, "x");
+    targets.push(p);
+  }
+
+  const err = await takeSnapshot(home, { targets }).then(() => null, (e) => e);
+
+  assert.ok(err instanceof SnapshotBudgetError, "should throw SnapshotBudgetError");
+  assert.equal(err.reason, "budget-exceeded");
+  assert.equal(err.actual.files, MAX_OPERATION_FILES + 1);
+  assert.equal(err.limit.files, MAX_OPERATION_FILES);
+});
+
+test("T-603 byte-budget: takeSnapshot throws SnapshotBudgetError when total bytes exceed 10 MiB", async () => {
+  const home = await makeSyntheticHome();
+  // Two files each just over 5 MiB → total > 10 MiB.
+  const chunk = Buffer.alloc(6 * 1024 * 1024, 0x61); // 6 MiB of 'a'
+  const f1 = join(home, "big1.bin");
+  const f2 = join(home, "big2.bin");
+  await writeFile(f1, chunk);
+  await writeFile(f2, chunk);
+
+  const err = await takeSnapshot(home, { targets: [f1, f2] }).then(() => null, (e) => e);
+
+  assert.ok(err instanceof SnapshotBudgetError, "should throw SnapshotBudgetError");
+  assert.equal(err.reason, "budget-exceeded");
+  assert.ok(err.actual.bytes > MAX_OPERATION_BYTES, "actual.bytes should exceed limit");
+  assert.equal(err.limit.bytes, MAX_OPERATION_BYTES);
+});
+
+test("T-603 boundary: takeSnapshot succeeds with exactly 50 files totalling under 10 MiB", async () => {
+  const home = await makeSyntheticHome();
+  // 50 files × 100 KiB = 5 MiB total — within both limits.
+  const chunk = Buffer.alloc(100 * 1024, 0x62); // 100 KiB of 'b'
+  const targets = [];
+  for (let i = 0; i < MAX_OPERATION_FILES; i++) {
+    const p = join(home, `boundary${i}.bin`);
+    await writeFile(p, chunk);
+    targets.push(p);
+  }
+
+  const { manifest } = await takeSnapshot(home, { targets });
+
+  assert.equal(manifest.status, "snapshot_taken");
+  assert.equal(manifest.files.length, MAX_OPERATION_FILES);
+});
+
+test("T-603 refusal does not leak: no snapshot or manifest files on budget refusal", async () => {
+  const home = await makeSyntheticHome();
+  // Trigger file-count refusal (51 files).
+  const targets = [];
+  for (let i = 0; i < MAX_OPERATION_FILES + 1; i++) {
+    const p = join(home, `leak${i}.txt`);
+    await writeFile(p, "y");
+    targets.push(p);
+  }
+
+  try {
+    await takeSnapshot(home, { targets });
+  } catch {
+    // expected
+  }
+
+  const snapshotsDir = join(home, ".claude", "housekeeper", "snapshots");
+  assert.equal(await fileExists(snapshotsDir), false, "snapshots dir must not exist on budget refusal");
+  const operationsDir = join(home, ".claude", "housekeeper", "operations");
+  assert.equal(await fileExists(operationsDir), false, "operations dir must not exist on budget refusal");
 });
