@@ -10,6 +10,29 @@ import { hashFile } from "./snapshot.mjs";
 
 const ROLLBACKABLE_STATUSES = new Set(["applied", "verified", "snapshot_taken"]);
 
+export class PlanDriftError extends Error {
+  constructor(opId, targetPath, expectedHash, actualHash) {
+    super(`Rollback plan drift detected for ${targetPath}`);
+    this.name = "PlanDriftError";
+    this.code = "rollback-plan-drift";
+    this.opId = opId;
+    this.targetPath = targetPath;
+    this.expectedHash = expectedHash;
+    this.actualHash = actualHash;
+  }
+}
+
+export class SnapshotIntegrityError extends Error {
+  constructor(snapshotPath, expectedHash, actualHash) {
+    super(`Snapshot integrity check failed for ${snapshotPath}`);
+    this.name = "SnapshotIntegrityError";
+    this.code = "snapshot-integrity";
+    this.snapshotPath = snapshotPath;
+    this.expectedHash = expectedHash;
+    this.actualHash = actualHash;
+  }
+}
+
 function makeRefusal(reason, message, targetPath = "") {
   return {
     class: "RollbackPlanRefusal",
@@ -81,6 +104,10 @@ function makeOperation(entry) {
   };
 }
 
+async function readOperationManifest(sourceManifestPath) {
+  return JSON.parse(await readFile(sourceManifestPath, "utf8"));
+}
+
 /**
  * composeRollbackPlan(home, opId) — read a Housekeeper operation manifest and
  * return a dry-run rollback plan.
@@ -100,7 +127,7 @@ export async function composeRollbackPlan(home, opId) {
 
   let manifest;
   try {
-    manifest = JSON.parse(await readFile(sourceManifestPath, "utf8"));
+    manifest = await readOperationManifest(sourceManifestPath);
   } catch {
     return emptyPlan(home, opId, sourceManifestPath, [
       makeRefusal("manifest-malformed", `Operation manifest ${sourceManifestPath} is not valid JSON.`)
@@ -161,5 +188,47 @@ export async function composeRollbackPlan(home, opId) {
     operations: files.map(makeOperation),
     refused: [],
     composedAt: new Date().toISOString()
+  };
+}
+
+/**
+ * validateRollbackPlan(plan, home) — re-read the operation manifest and verify
+ * that both the post-apply file state and snapshot copies still match the plan.
+ *
+ * Throws PlanDriftError when the live original path no longer matches the
+ * operation's post-apply state. Throws SnapshotIntegrityError when a snapshot
+ * file is missing or no longer hashes to sha256Before.
+ */
+export async function validateRollbackPlan(plan, home) {
+  if (Array.isArray(plan.refused) && plan.refused.length > 0) {
+    return { ...plan, validatedAt: new Date().toISOString() };
+  }
+
+  const sourceManifestPath = join(home, "housekeeper", "operations", `${plan.opId}.json`);
+  const manifest = await readOperationManifest(sourceManifestPath);
+  const files = Array.isArray(manifest.files) ? manifest.files : [];
+
+  for (const entry of files) {
+    const drift = await detectDrift(entry, manifest.status);
+    if (drift) {
+      throw new PlanDriftError(plan.opId, entry.originalPath, drift.expected, drift.actual);
+    }
+  }
+
+  for (const entry of files) {
+    if (!entry.snapshotPath || !existsSync(entry.snapshotPath)) {
+      throw new SnapshotIntegrityError(entry.snapshotPath || "", entry.sha256Before, null);
+    }
+    const actual = await hashFile(entry.snapshotPath);
+    if (actual !== entry.sha256Before) {
+      throw new SnapshotIntegrityError(entry.snapshotPath, entry.sha256Before, actual);
+    }
+  }
+
+  return {
+    ...plan,
+    sourceManifestPath,
+    operations: files.map(makeOperation),
+    validatedAt: new Date().toISOString()
   };
 }
