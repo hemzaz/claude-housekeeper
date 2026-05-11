@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createHash } from "node:crypto";
+import { unlinkSync } from "node:fs";
 import { mkdir, writeFile, readFile, access, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import os from "node:os";
@@ -842,4 +843,95 @@ test("T-703 verify throws OperationStateError when status is not applied", async
   assert.ok(err instanceof OperationStateError, "should throw OperationStateError");
   assert.equal(err.expected, "applied");
   assert.equal(err.actual, "snapshot_taken");
+});
+
+// ── Deletion-aware — Patch A + Patch B ───────────────────────────────────────
+
+test("Patch A — successful deletion does not set partialApply", async () => {
+  const home = await makeSyntheticHome();
+  const filePath = join(home, "del-a.txt");
+  await writeFile(filePath, "to be deleted\n");
+
+  const { opId } = await takeSnapshot(home, { targets: [filePath] });
+
+  const manifest = await applyOperation(opId, home, [
+    { apply: (p) => { unlinkSync(p); } }
+  ]);
+
+  assert.ok(!manifest.partialApply, "partialApply should be false/undefined for successful deletion");
+  assert.equal(manifest.files[0].applied, true, "applied should be true");
+  assert.equal(manifest.files[0].sha256After, null, "sha256After should be null for deletion");
+  assert.equal(manifest.status, "applied");
+});
+
+test("Patch A — failed deletion (apply throws) still sets partialApply", async () => {
+  const home = await makeSyntheticHome();
+  const filePath = join(home, "del-b.txt");
+  await writeFile(filePath, "will not be deleted\n");
+
+  const { opId } = await takeSnapshot(home, { targets: [filePath] });
+
+  const manifest = await applyOperation(opId, home, [
+    { apply: () => { throw new Error("simulated apply failure"); } }
+  ]);
+
+  assert.equal(manifest.partialApply, true, "partialApply should be true on apply failure");
+  assert.equal(manifest.files[0].applied, false, "applied should be false on failure");
+});
+
+test("Patch A — successful content-replace still records sha256After (existing behaviour preserved)", async () => {
+  const home = await makeSyntheticHome();
+  const filePath = join(home, "replace-a.txt");
+  const original = "original content\n";
+  const mutated = "mutated content\n";
+  await writeFile(filePath, original);
+
+  const { opId } = await takeSnapshot(home, { targets: [filePath] });
+
+  const manifest = await applyOperation(opId, home, [
+    { apply: async (p) => writeFile(p, mutated) }
+  ]);
+
+  const expectedHash = sha256Hex(Buffer.from(mutated, "utf8"));
+  assert.equal(manifest.files[0].sha256After, expectedHash, "sha256After should match new content hash");
+  assert.equal(manifest.files[0].applied, true);
+  assert.ok(!manifest.partialApply, "partialApply should not be set on successful replace");
+});
+
+test("Patch B — verify of a clean deletion transitions to verified", async () => {
+  const home = await makeSyntheticHome();
+  const filePath = join(home, "del-c.txt");
+  await writeFile(filePath, "delete me\n");
+
+  const { opId } = await takeSnapshot(home, { targets: [filePath] });
+
+  await applyOperation(opId, home, [
+    { apply: (p) => { unlinkSync(p); } }
+  ]);
+
+  const result = await verify(opId, home);
+
+  assert.equal(result.status, "verified", "status should be verified after clean deletion");
+  assert.ok(!result.files[0].verifyFailure, "verifyFailure should not be set on clean deletion");
+});
+
+test("Patch B — verify catches a silently-failed deletion", async () => {
+  const home = await makeSyntheticHome();
+  const filePath = join(home, "del-d.txt");
+  await writeFile(filePath, "to be deleted then restored\n");
+
+  const { opId } = await takeSnapshot(home, { targets: [filePath] });
+
+  // Apply deletes the file — sha256After is recorded as null in the manifest.
+  await applyOperation(opId, home, [
+    { apply: (p) => { unlinkSync(p); } }
+  ]);
+
+  // Simulate file reappearing after apply (e.g. another process restored it).
+  await writeFile(filePath, "restored by another process\n");
+
+  const result = await verify(opId, home);
+
+  assert.equal(result.files[0].verifyFailure, true, "verifyFailure should be true when file exists after deletion op");
+  assert.equal(result.status, "applied", "status should remain applied on verify failure");
 });
