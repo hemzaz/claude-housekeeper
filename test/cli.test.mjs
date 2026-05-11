@@ -134,6 +134,20 @@ function makeSyntheticClaudeHome() {
   return { home, cacheDir };
 }
 
+function cleanCacheAndCaptureOperation() {
+  const { home, cacheDir } = makeSyntheticClaudeHome();
+  const clean = runCli([
+    "clean", "--confirm", "--yes",
+    "--target=plugin.cache_unreferenced",
+    `--path=${cacheDir}`,
+    `--home=${home}`
+  ]);
+  assert.equal(clean.status, 0, `clean failed:\nstdout: ${clean.stdout}\nstderr: ${clean.stderr}`);
+  const match = clean.stdout.match(/rollback (op_[0-9]{14}_[0-9a-f]{8})/);
+  assert.ok(match, `clean output did not include rollback op id:\n${clean.stdout}`);
+  return { home, cacheDir, opId: match[1] };
+}
+
 test("clean (no flags) prints dry-run plan and exits 0", () => {
   // No home needed: flag gate fires before existsSync check.
   const result = runCli(["clean"]);
@@ -240,4 +254,54 @@ test("rollback accepts canonical op id and --dry-run before handler implementati
   assert.equal(result.status, 2, `expected exit 2, got ${result.status}`);
   assert.match(result.stderr, /Claude home does not exist/);
   assert.doesNotMatch(result.stderr, /Unknown argument: --dry-run/);
+});
+
+test("rollback --dry-run prints restore plan without writing files", () => {
+  const { home, cacheDir, opId } = cleanCacheAndCaptureOperation();
+
+  const result = runCli(["rollback", opId, "--dry-run", `--home=${home}`]);
+
+  assert.equal(result.status, 0, `expected exit 0, got ${result.status}:\n${result.stderr}`);
+  assert.match(result.stdout, /HOUSEKEEPER ROLLBACK/);
+  assert.match(result.stdout, /DRY-RUN/);
+  assert.match(result.stdout, new RegExp(opId));
+  assert.match(result.stdout, /plugin\.json/);
+  assert.equal(existsSync(cacheDir), false, "dry-run must not restore the cache dir");
+  const manifest = JSON.parse(readFileSync(path.join(home, "housekeeper", "operations", `${opId}.json`), "utf8"));
+  assert.equal(manifest.status, "verified");
+});
+
+test("rollback without --confirm prints plan then refuses", () => {
+  const { home, opId } = cleanCacheAndCaptureOperation();
+
+  const result = runCli(["rollback", opId, `--home=${home}`]);
+
+  assert.equal(result.status, 2, `expected exit 2, got ${result.status}`);
+  assert.match(result.stdout, /HOUSEKEEPER ROLLBACK/);
+  assert.match(result.stderr, /Refusing rollback: --confirm not passed/);
+});
+
+test("rollback --confirm without --yes refuses after showing plan", () => {
+  const { home, opId } = cleanCacheAndCaptureOperation();
+
+  const result = runCli(["rollback", opId, "--confirm", `--home=${home}`]);
+
+  assert.equal(result.status, 2, `expected exit 2, got ${result.status}`);
+  assert.match(result.stdout, /HOUSEKEEPER ROLLBACK/);
+  assert.match(result.stderr, /Refusing rollback: --yes not passed/);
+});
+
+test("rollback --confirm --yes restores files and marks manifest rolled_back", () => {
+  const { home, cacheDir, opId } = cleanCacheAndCaptureOperation();
+
+  const result = runCli(["rollback", opId, "--confirm", "--yes", `--home=${home}`]);
+
+  assert.equal(result.status, 0, `expected exit 0, got ${result.status}:\nstdout: ${result.stdout}\nstderr: ${result.stderr}`);
+  assert.match(result.stdout, /DONE\. Operation rolled back\./);
+  assert.ok(existsSync(cacheDir), "rollback should restore the cache directory");
+  assert.ok(existsSync(path.join(cacheDir, "plugin.json")), "rollback should restore plugin.json");
+  assert.ok(existsSync(path.join(cacheDir, "data.txt")), "rollback should restore data.txt");
+  const manifest = JSON.parse(readFileSync(path.join(home, "housekeeper", "operations", `${opId}.json`), "utf8"));
+  assert.equal(manifest.status, "rolled_back");
+  assert.ok(manifest.files.every((entry) => entry.rollbackVerified === true));
 });
