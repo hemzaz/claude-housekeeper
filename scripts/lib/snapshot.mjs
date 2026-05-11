@@ -212,7 +212,7 @@ export async function hashFile(filePath) {
  * content may be a Buffer or string.
  * On failure, unlinks the tmp file before rethrowing.
  */
-async function atomicWrite(destPath, content) {
+export async function atomicWrite(destPath, content) {
   const dir = destPath.slice(0, destPath.lastIndexOf("/"));
   const tmpPath = `${destPath}.tmp.${randomBytes(4).toString("hex")}`;
   let fh;

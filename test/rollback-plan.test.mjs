@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import {
+  existsSync,
   mkdirSync,
   readFileSync,
   rmSync,
@@ -7,13 +8,17 @@ import {
   writeFileSync
 } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
+import os from "node:os";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import {
   composeRollbackPlan,
+  executeRollbackPlan,
   validateRollbackPlan,
+  LockHeldError,
   PlanDriftError,
+  RollbackNotImplementedError,
   SnapshotIntegrityError
 } from "../scripts/lib/rollback-plan.mjs";
 import { applyOperation, takeSnapshot, verify } from "../scripts/lib/snapshot.mjs";
@@ -48,6 +53,7 @@ async function makeAppliedOperation() {
 
   return {
     claudeHome,
+    targetDir,
     opId,
     manifest,
     operationsDir: path.join(claudeHome, "housekeeper", "operations"),
@@ -223,4 +229,59 @@ test("validateRollbackPlan rejects a corrupted snapshot file", async () => {
       return true;
     }
   );
+});
+
+test("executeRollbackPlan happy path restores files and marks manifest rolled_back", async () => {
+  const { claudeHome, opId, manifest, targetDir } = await makeAppliedOperation();
+  const plan = await validateRollbackPlan(await composeRollbackPlan(claudeHome, opId), claudeHome);
+
+  const updated = await executeRollbackPlan(plan, claudeHome);
+
+  assert.equal(updated.status, "rolled_back");
+  assert.match(updated.rolledBackAt, /^\d{4}-\d{2}-\d{2}T/);
+  assert.ok(existsSync(targetDir));
+  for (const entry of manifest.files) {
+    assert.equal(readFileSync(entry.originalPath, "utf8"), readFileSync(entry.snapshotPath, "utf8"));
+  }
+  assert.equal(updated.files.every((entry) => entry.rollbackVerified === true), true);
+  assert.equal(existsSync(path.join(claudeHome, "housekeeper", "lock")), false);
+});
+
+test("executeRollbackPlan refuses a fresh lockfile", async () => {
+  const { claudeHome, opId } = await makeAppliedOperation();
+  const plan = await validateRollbackPlan(await composeRollbackPlan(claudeHome, opId), claudeHome);
+  const lockPath = path.join(claudeHome, "housekeeper", "lock");
+  writeFileSync(lockPath, JSON.stringify({
+    pid: process.pid,
+    hostname: os.hostname(),
+    opId: "op_20260511143022_a1b2c3d4",
+    startedAt: new Date().toISOString(),
+    stalenessAt: new Date(Date.now() + 30 * 60 * 1000).toISOString()
+  }, null, 2) + "\n");
+
+  await assert.rejects(
+    () => executeRollbackPlan(plan, claudeHome),
+    (err) => {
+      assert.ok(err instanceof LockHeldError);
+      assert.equal(err.lockManifest.pid, process.pid);
+      return true;
+    }
+  );
+});
+
+test("executeRollbackPlan releases lockfile after rollback operation failure", async () => {
+  const { claudeHome, opId } = await makeAppliedOperation();
+  const plan = await validateRollbackPlan(await composeRollbackPlan(claudeHome, opId), claudeHome);
+  const badPlan = {
+    ...plan,
+    operations: plan.operations.map((op, index) => index === 0
+      ? { ...op, rollbackOp: { kind: "not-implemented", args: {} } }
+      : op)
+  };
+
+  await assert.rejects(
+    () => executeRollbackPlan(badPlan, claudeHome),
+    (err) => err instanceof RollbackNotImplementedError
+  );
+  assert.equal(existsSync(path.join(claudeHome, "housekeeper", "lock")), false);
 });

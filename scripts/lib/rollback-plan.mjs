@@ -1,12 +1,13 @@
 // Rollback plan composition for Claude Housekeeper v0.2.
 //
-// T-801 scope: read operation manifests and produce a dry-run plan. This module
-// does not restore files; validation and execution land in later Phase 8 tasks.
+// T-801..T-803 scope: read operation manifests, validate rollback freshness,
+// and execute the restore while preserving the Housekeeper lock invariant.
 
 import { existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
-import { hashFile } from "./snapshot.mjs";
+import { copyFile, mkdir, open, readFile, unlink } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import os from "node:os";
+import { atomicWrite, generateOpId, hashFile } from "./snapshot.mjs";
 
 const ROLLBACKABLE_STATUSES = new Set(["applied", "verified", "snapshot_taken"]);
 
@@ -30,6 +31,24 @@ export class SnapshotIntegrityError extends Error {
     this.snapshotPath = snapshotPath;
     this.expectedHash = expectedHash;
     this.actualHash = actualHash;
+  }
+}
+
+export class LockHeldError extends Error {
+  constructor(lockManifest) {
+    super(`Housekeeper lock is held by pid ${lockManifest.pid} on ${lockManifest.hostname}`);
+    this.name = "LockHeldError";
+    this.code = "lock-held";
+    this.lockManifest = lockManifest;
+  }
+}
+
+export class RollbackNotImplementedError extends Error {
+  constructor(kind) {
+    super(`Rollback operation kind "${kind}" is not implemented in v0.2.0`);
+    this.name = "RollbackNotImplementedError";
+    this.code = "rollback-kind-not-implemented";
+    this.kind = kind;
   }
 }
 
@@ -107,6 +126,70 @@ function makeOperation(entry) {
 async function readOperationManifest(sourceManifestPath) {
   return JSON.parse(await readFile(sourceManifestPath, "utf8"));
 }
+
+const LOCK_STALE_WINDOW_MS = 30 * 60 * 1000;
+
+async function acquireLock(home) {
+  const lockDir = join(home, "housekeeper");
+  const lockPath = join(lockDir, "lock");
+  await mkdir(lockDir, { recursive: true });
+
+  const manifest = {
+    pid: process.pid,
+    hostname: os.hostname(),
+    opId: generateOpId(),
+    startedAt: new Date().toISOString(),
+    stalenessAt: new Date(Date.now() + LOCK_STALE_WINDOW_MS).toISOString()
+  };
+
+  let fh;
+  try {
+    fh = await open(lockPath, "wx");
+    await fh.writeFile(JSON.stringify(manifest, null, 2) + os.EOL);
+    await fh.close();
+    return lockPath;
+  } catch (err) {
+    if (fh) {
+      try { await fh.close(); } catch { /* ignore */ }
+    }
+    if (err.code === "EEXIST") {
+      try {
+        const raw = await readFile(lockPath, "utf8");
+        const existing = JSON.parse(raw);
+        throw new LockHeldError(existing);
+      } catch (inner) {
+        if (inner instanceof LockHeldError) throw inner;
+        try { await unlink(lockPath); } catch { /* ignore */ }
+        let retry;
+        try {
+          retry = await open(lockPath, "wx");
+          await retry.writeFile(JSON.stringify(manifest, null, 2) + os.EOL);
+          await retry.close();
+          return lockPath;
+        } catch {
+          if (retry) { try { await retry.close(); } catch { /* ignore */ } }
+          throw err;
+        }
+      }
+    }
+    throw err;
+  }
+}
+
+async function releaseLock(lockPath) {
+  try {
+    await unlink(lockPath);
+  } catch {
+    // Already gone.
+  }
+}
+
+const ROLLBACK_REGISTRY = Object.freeze({
+  "file-restore-from-snapshot": async (args) => {
+    await mkdir(dirname(args.targetPath), { recursive: true });
+    await copyFile(args.sourcePath, args.targetPath);
+  }
+});
 
 /**
  * composeRollbackPlan(home, opId) — read a Housekeeper operation manifest and
@@ -231,4 +314,55 @@ export async function validateRollbackPlan(plan, home) {
     operations: files.map(makeOperation),
     validatedAt: new Date().toISOString()
   };
+}
+
+/**
+ * executeRollbackPlan(plan, home) — restore each snapshotted file and mark the
+ * operation manifest rolled_back. Caller is expected to pass a validated plan.
+ */
+export async function executeRollbackPlan(plan, home) {
+  const lockPath = join(home, "housekeeper", "lock");
+  if (existsSync(lockPath)) {
+    try {
+      const raw = await readFile(lockPath, "utf8");
+      const existing = JSON.parse(raw);
+      if (Date.now() < new Date(existing.stalenessAt).getTime()) {
+        throw new LockHeldError(existing);
+      }
+    } catch (err) {
+      if (err instanceof LockHeldError) throw err;
+    }
+  }
+
+  const acquiredPath = await acquireLock(home);
+
+  try {
+    const sourceManifestPath = join(home, "housekeeper", "operations", `${plan.opId}.json`);
+    const manifest = await readOperationManifest(sourceManifestPath);
+    const filesByPath = new Map((manifest.files || []).map((entry) => [entry.originalPath, entry]));
+
+    for (const op of plan.operations) {
+      const kind = op.rollbackOp?.kind || "";
+      const rollback = ROLLBACK_REGISTRY[kind];
+      if (!rollback) throw new RollbackNotImplementedError(kind);
+
+      await rollback(op.rollbackOp.args || {});
+
+      const actual = await hashFile(op.originalPath);
+      if (actual !== op.sha256Before) {
+        throw new SnapshotIntegrityError(op.snapshotPath, op.sha256Before, actual);
+      }
+
+      const entry = filesByPath.get(op.originalPath);
+      if (entry) entry.rollbackVerified = true;
+    }
+
+    manifest.status = "rolled_back";
+    manifest.rolledBackAt = new Date().toISOString();
+    await atomicWrite(sourceManifestPath, JSON.stringify(manifest, null, 2) + os.EOL);
+
+    return manifest;
+  } finally {
+    await releaseLock(acquiredPath);
+  }
 }
