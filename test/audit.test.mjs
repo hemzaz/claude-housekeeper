@@ -326,6 +326,41 @@ test("auditClaudeHome is an alias for assembleReport", () => {
   assert.equal(a.findings.length, b.findings.length);
 });
 
+// ---------- home.clean meta-detector ----------
+
+test("home.clean fires when no other detector emitted under default scope", () => {
+  const home = fixtureHome();
+  writeJson(path.join(home, "settings.json"), {});
+  const report = assembleReport(home);
+  assert.equal(report.findings.length, 1, "exactly one finding on a clean home");
+  const f = report.findings[0];
+  assert.equal(f.id, "home.clean");
+  assert.equal(f.stance, "inform");
+  assert.equal(f.class, "orientation");
+  assert.equal(f.claimLevel, "observation");
+  assert.equal(f.summary, "no first-wedge issues found");
+  assert.deepEqual(f.blockedActions, ["claim healthy"]);
+});
+
+test("home.clean does NOT fire when any other detector emits", () => {
+  // Force a finding by writing a hook pointing at a missing plugin-cache path.
+  // isPluginCacheCommand gates the dangling-hook detector on a plugins/cache
+  // shape, so the ghost path below triggers it.
+  const home = fixtureHome();
+  const ghostPath = path.join(home, "plugins/cache/ghost/never-installed/9.9.9/hook.sh");
+  writeJson(path.join(home, "settings.json"), {
+    hooks: {
+      PreToolUse: [
+        { hooks: [{ type: "command", command: ghostPath }] }
+      ]
+    }
+  });
+  const report = assembleReport(home);
+  const ids = report.findings.map((f) => f.id);
+  assert.ok(ids.includes("settings.hook_path_dangling"), "dangling-hook detector fired");
+  assert.equal(ids.includes("home.clean"), false, "home.clean must not fire alongside real findings");
+});
+
 // ---------- T-402: scan-budget degradation against the huge-home fixture ----------
 
 test("huge-home-degraded fixture triggers a degraded scan finding under a low budget", () => {
