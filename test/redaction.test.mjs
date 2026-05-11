@@ -177,7 +177,7 @@ test("redactReport: a finding without sensitive content renders unchanged with -
 // strings like "safe step" or "commands/local-build.md" is NOT mangled.
 test("redactReport: 'safe step' and 'commands/local-build.md' survive --redact", () => {
   const finding = makeFinding({
-    id: "registry.local_command_shadow",
+    id: "registry.local_command_diverged",
     stance: "review",
     summary: "safe step: review intent before any change",
     surface: makeSurfaceClassification({
