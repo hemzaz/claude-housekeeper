@@ -177,8 +177,9 @@ function selectedDetectors(scope) {
 // ---------- finding assembly (T-202) ----------
 
 function buildFinding(raw, { home, mode, policyMatchesFor }) {
-  const surface = raw.surface
+  const baseSurface = raw.surface
     || classifySurface(raw.targetPath || "", { ...(raw.surfaceHints || {}), home });
+  const surface = applySafeModeLimits(baseSurface, mode);
   const evidence = makeEvidenceSet({ ...(raw.evidence || {}), missing: raw.missingKeys || [] });
   const matches = raw.targetPath ? policyMatchesFor(raw.targetPath) : [];
   const stance = decideStance({
@@ -223,6 +224,16 @@ function buildFinding(raw, { home, mode, policyMatchesFor }) {
   if (probe) finding.proposedProbe = probe;
 
   return finding;
+}
+
+// Apply mode-driven surface.limits per docs/schemas.md and the fixture goldens.
+// In safe mode, every surface carries `safe-mode-no-loader-key` so consumers
+// know loader-side evidence (e.g. live /hooks output) was not collected.
+function applySafeModeLimits(surface, mode) {
+  if (mode !== "safe") return surface;
+  const existing = Array.isArray(surface?.limits) ? surface.limits : [];
+  if (existing.includes("safe-mode-no-loader-key")) return surface;
+  return { ...surface, limits: [...existing, "safe-mode-no-loader-key"] };
 }
 
 function defaultBlockedActions(id, stance) {
