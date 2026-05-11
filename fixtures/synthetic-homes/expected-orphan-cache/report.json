@@ -34,13 +34,13 @@
       },
       "evidence": {
         "structural": [
-          "version is not referenced by known installed registry evidence",
-          "orphan age is inside documented grace evidence"
+          "installed registry parsed",
+          "version not referenced by installed registry"
         ],
         "loader": [],
         "behavioral": [],
         "ownership": [],
-        "freshness": [],
+        "freshness": ["within-grace-period"],
         "reversibility": [],
         "missing": ["live active-session reference check"]
       },
