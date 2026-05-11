@@ -78,3 +78,43 @@ test("verify defines a real 'subagent dispatch' probe (not a SKIP placeholder)",
     "no SKIP placeholder remains for subagent dispatch"
   );
 });
+
+// T-700 / T-701: --confirm and --yes flags
+test("--confirm appears in help text with arm-mutation wording", () => {
+  const result = runCli(["--help"]);
+  assert.equal(result.status, 0);
+  assert.match(result.stdout, /--confirm/);
+  assert.match(result.stdout, /Arm the mutation path for clean/);
+  assert.match(result.stdout, /REQUIRED to actually/);
+});
+
+test("--yes appears in help text with consent-gate wording", () => {
+  const result = runCli(["--help"]);
+  assert.equal(result.status, 0);
+  assert.match(result.stdout, /--yes/);
+  assert.match(result.stdout, /Skip the consent prompt/);
+  assert.match(result.stdout, /no-stdin convention/);
+});
+
+test("clean (no flags) exits 0 with DRY-RUN message and --confirm hint", () => {
+  // No home needed: flag gate fires before existsSync check.
+  const result = runCli(["clean"]);
+  assert.equal(result.status, 0, `expected exit 0, got ${result.status}: ${result.stderr}`);
+  assert.match(result.stdout, /DRY-RUN/);
+  assert.match(result.stdout, /--confirm/);
+});
+
+test("clean --confirm (no --yes) exits 2 with Refusing mutation message", () => {
+  // No home needed: flag gate fires before existsSync check.
+  const result = runCli(["clean", "--confirm"]);
+  assert.equal(result.status, 2, `expected exit 2, got ${result.status}`);
+  assert.match(result.stderr, /Refusing mutation/);
+  assert.match(result.stderr, /--yes/);
+});
+
+test("clean --confirm --yes exits 0 with T-704 placeholder", () => {
+  const CLEAN_HOME = path.join(REPO_ROOT, "fixtures", "synthetic-homes", "clean-home", "home");
+  const result = runCli(["clean", "--confirm", "--yes", `--home=${CLEAN_HOME}`]);
+  assert.equal(result.status, 0, `expected exit 0, got ${result.status}: ${result.stderr}`);
+  assert.match(result.stdout, /T-704/);
+});
