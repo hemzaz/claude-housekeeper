@@ -180,6 +180,7 @@
   <body>
     <nav>
       <strong>Claude Housekeeper</strong>
+      <a href="https://github.com/hemzaz/claude-housekeeper/releases/tag/v0.1.0">v0.1.0</a>
       <a href="https://github.com/hemzaz/claude-housekeeper">GitHub</a>
     </nav>
 
@@ -201,21 +202,32 @@
 No files changed.
 
 PRIMARY
-  stance: probe
-  finding: old plugin cache version may still be live
-  evidence: not referenced by installed registry; inside plugin cache
-  missing key: active-session or orphan-grace evidence
-  next step: run a live freshness probe after consent
+  stance: review
+  finding: go-review is byte-identical to plugin version
+  evidence: local command is byte-identical to plugin version
+  missing key: user-intent
+  next step: show source, target, and precedence; await user intent
 
 STANCE SUMMARY
-  inform   2
-  watch    1
-  review   0
-  probe    1
-  protect  1
+  inform   1
+  watch    3
+  review   3
+  probe    0
+  protect  0
   prepare  0
   repair   0
-  block    0</pre>
+  block    0
+
+BOUNDARIES
+  protected: 0
+  sector-boundary: 0
+  secret-adjacent skipped: 0
+
+SCAN
+  mode: diagnose
+  degraded: no
+  skipped: none</pre>
+        <p>Run <code>plan</code> to see every finding with its <code>path:</code>, next step, and blocked actions. Run with <code>--json</code> for the stable machine-readable shape, or <code>--redact</code> to share output safely.</p>
       </section>
 
       <section>
@@ -223,7 +235,9 @@ STANCE SUMMARY
         <pre>git clone https://github.com/hemzaz/claude-housekeeper.git
 cd claude-housekeeper
 node scripts/claude-housekeeper.mjs diagnose
-node scripts/claude-housekeeper.mjs plan --scope=registry</pre>
+node scripts/claude-housekeeper.mjs plan --scope=registry
+node scripts/claude-housekeeper.mjs diagnose --safe --redact</pre>
+        <p>The plugin slash command is <code>/claude-housekeeper:housekeep</code>. The Node CLI also runs out-of-band when Claude plugin loading itself is broken.</p>
       </section>
 
       <section>
@@ -296,22 +310,27 @@ block    not allowed under current evidence</pre>
         <h2>Status</h2>
         <div class="status">
           <div>
-            <strong>Available Now</strong>
+            <strong>Shipped — v0.1.0</strong>
             <ul>
-              <li>Read-only diagnose and plan</li>
-              <li>Framework docs for surface classification, evidence keys, and stances</li>
-              <li>First wedge cutline for broken hooks and plugin cache drift</li>
-              <li>Claude plugin command wrapper</li>
-              <li>Node CLI and fixture tests for the current broad scanner</li>
+              <li>Read-only <code>diagnose</code>, <code>plan</code>, and <code>verify</code></li>
+              <li>Stance-first report grammar with 8 stances and 16 fixture goldens</li>
+              <li>Surface classification on every finding (9 axes + per-detector safe-mode limits)</li>
+              <li><code>--safe</code> posture and <code>--redact</code> privacy mode</li>
+              <li>Self-failure read-only degradation</li>
+              <li>Stable JSON schema (<code>schemaVersion: "0.1"</code>) with <code>findings[].targetPath</code></li>
+              <li>Claude plugin slash command and standalone Node CLI</li>
+              <li>CI matrix: Ubuntu + macOS × Node 20 + 22</li>
             </ul>
           </div>
           <div>
-            <strong>Next</strong>
+            <strong>Roadmap</strong>
             <ul>
-              <li>Align CLI output with stance-first report grammar</li>
-              <li>Add first-wedge acceptance fixtures</li>
-              <li>Prove loader semantics before mutation</li>
-              <li>Only then design snapshot-backed clean, quarantine, and rollback</li>
+              <li>SessionStart prevention hook (warn before mid-session failures)</li>
+              <li>More precise settings schema validation</li>
+              <li>Non-interactive subagent dispatch smoketest in <code>verify</code></li>
+              <li>Snapshot-backed <code>clean</code> with one-line rollback output</li>
+              <li><code>rollback &lt;id&gt;</code> restore flow</li>
+              <li>Local learning from accepted plans and false positives</li>
             </ul>
           </div>
         </div>

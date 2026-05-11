@@ -43,7 +43,7 @@ Allowances are reviewed exceptions:
 {
   "allow": [
     {
-      "check": "registry.local_command_shadow",
+      "check": "registry.local_command_diverged",
       "path": "commands/go-build.md",
       "reason": "intentional project override"
     }
@@ -113,7 +113,7 @@ No hidden state is allowed. Every changed classification needs an explanation.
 Future command surface:
 
 ```bash
-claude-housekeeper learn false-positive --check=registry.local_command_shadow --path=commands/go-build.md --reason="intentional override"
+claude-housekeeper learn false-positive --check=registry.local_command_diverged --path=commands/go-build.md --reason="intentional override"
 claude-housekeeper protect path skills/jewelry-box/** --reason="private experiments"
 claude-housekeeper knowledge list
 claude-housekeeper knowledge explain commands/go-build.md

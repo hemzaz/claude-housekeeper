@@ -177,7 +177,7 @@ doNotTouch:
     scope: user
 
 allowances:
-  - finding: registry.local_command_shadow
+  - finding: registry.local_command_diverged
     path: ~/.claude/commands/local-build.md
     reason: intentional override
     expires: never

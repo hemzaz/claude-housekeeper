@@ -206,12 +206,15 @@ registry, and Housekeeper's own operation manifest. Detector ids:
 - `plugin.cache_unreferenced`
 - `plugin.duplicate_registration`
 - `plugin.cache_size`
-- `registry.local_command_shadow`
 - `registry.local_skill_shadow`
 - `registry.local_command_identical`
 - `registry.local_command_diverged`
 - `registry.broken_frontmatter`
 - `housekeeper.interrupted_operation`
+- `housekeeper.config_invalid`
+- `housekeeper.operations_unreadable`
+- `home.not_found`
+- `home.scan_budget_hit`
 
 Hygiene and state findings (large logs, zombie state, corrupt backups,
 drift directories, file-history age) are deferred to v0.2 alongside the
@@ -219,16 +222,24 @@ knowledge layer.
 
 ## Roadmap
 
-- Safe out-of-band first wedge for broken hooks and plugin cache drift
-- Stance-first report format
-- Surface classification in every finding
+Shipped in v0.1.0:
+
+- Safe out-of-band first wedge for broken hooks, plugin cache drift, and local registry shadow
+- Stance-first report format with eight stances
+- Surface classification on every finding (nine axes plus per-detector safe-mode limits)
+- Stable JSON schema (`schemaVersion: "0.1"`) including `findings[].targetPath`
+- `--safe` posture and `--redact` privacy mode
+- Self-failure read-only degradation
+- GitHub Pages product site and CI matrix on Ubuntu + macOS × Node 20 + 22
+
+Coming:
+
 - Snapshot-backed `clean` with one-line rollback output
 - `rollback <id>` restore flow
 - SessionStart prevention hook for collisions, stale hooks, corrupt backups, and zombie state
 - Local learning from false positives, protected paths, accepted plans, and rollback outcomes
 - More precise settings schema checks
 - A non-interactive subagent dispatch smoketest
-- GitHub Pages product site and CI publishing
 
 ## Known Limitations
 
