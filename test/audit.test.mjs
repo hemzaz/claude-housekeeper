@@ -15,7 +15,7 @@ test("assembleReport returns Report shape with stable fields", () => {
   const home = fixtureHome();
   const report = assembleReport(home);
 
-  assert.equal(report.schemaVersion, "0.1-pre");
+  assert.equal(report.schemaVersion, "0.1");
   assert.equal(report.filesChanged, false);
   assert.equal(report.mode, "diagnose"); // T-209 default
   assert.ok(report.home);

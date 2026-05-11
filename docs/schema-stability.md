@@ -20,7 +20,7 @@ Source: `scripts/lib/report.mjs` `renderJsonReport()` plus
 
 | Field | Class | Rule |
 | --- | --- | --- |
-| `schemaVersion` | stable | required string; `0.1-pre` until tag, then `0.1` |
+| `schemaVersion` | stable | required string; `0.1` |
 | `mode` | stable | `safe`, `diagnose`, `plan`, `live`, or future enum |
 | `home` | stable | scanned home root path |
 | `generatedAt` | stable | ISO 8601 timestamp |

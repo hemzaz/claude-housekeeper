@@ -2,7 +2,7 @@
 // Pure functions — return new plain objects matching docs/schemas.md.
 // No mutation, no I/O.
 
-export const SCHEMA_VERSION = "0.1-pre";
+export const SCHEMA_VERSION = "0.1";
 
 const STANCE_KEYS = [
   "inform",

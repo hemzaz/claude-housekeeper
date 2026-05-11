@@ -432,7 +432,7 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done · `[!]` blocked
   - Verify: `git tag v0.1.0` + push; release notes match
     `docs/launch-checklist.md` "Suggested First Release Notes".
 
-- [ ] **T-507** Bump `schemaVersion` from `"0.1-pre"` to `"0.1"` at tag
+- [x] **T-507** Bump `schemaVersion` from `"0.1-pre"` to `"0.1"` at tag
   - File: `scripts/lib/audit.mjs` (or `report.mjs` once renderer lands).
     Sole change: the literal string `"0.1-pre"` becomes `"0.1"`.
   - Per `docs/schemas.md` §1 + `docs/schema-stability.md`. Pre-release

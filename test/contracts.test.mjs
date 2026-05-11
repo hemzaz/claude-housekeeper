@@ -151,8 +151,8 @@ test("makeReport defaults include schemaVersion, filesChanged, stanceSummary", (
   assert.deepEqual(r.degraded, []);
 });
 
-test("makeReport schemaVersion default is '0.1-pre'", () => {
-  assert.equal(makeReport().schemaVersion, "0.1-pre");
+test("makeReport schemaVersion default is '0.1'", () => {
+  assert.equal(makeReport().schemaVersion, "0.1");
 });
 
 test("makeReport accepts mode override and merges stanceSummary", () => {

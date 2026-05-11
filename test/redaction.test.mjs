@@ -193,7 +193,7 @@ test("redactReport: 'safe step' and 'commands/local-build.md' survive --redact",
   finding.why = "user intent may have produced this state";
 
   const report = makeReport({
-    schemaVersion: "0.1-pre",
+    schemaVersion: "0.1",
     home: "/home/u/.claude",
     findings: [finding],
     primary: finding.id,
@@ -232,7 +232,7 @@ test("redactReport: ANTHROPIC_API_KEY=sk-... in a hook command becomes <redacted
   });
 
   const report = makeReport({
-    schemaVersion: "0.1-pre",
+    schemaVersion: "0.1",
     home: "/home/u/.claude",
     findings: [finding],
     primary: finding.id,

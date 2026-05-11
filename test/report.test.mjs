@@ -16,7 +16,7 @@ import {
 
 function emptyReport(overrides = {}) {
   return makeReport({
-    schemaVersion: "0.1-pre",
+    schemaVersion: "0.1",
     mode: "diagnose",
     home: "/home/u/.claude",
     generatedAt: "2026-05-10T00:00:00.000Z",
@@ -271,9 +271,9 @@ test("json renderer: proposedProbe forwarded when present (T-210)", () => {
   assert.equal(json.findings[0].proposedProbe.consent, "high");
 });
 
-test("json renderer: schemaVersion is forwarded as 0.1-pre during pre-release", () => {
+test("json renderer: schemaVersion is forwarded as 0.1", () => {
   const json = renderJsonReport(emptyReport());
-  assert.equal(json.schemaVersion, "0.1-pre");
+  assert.equal(json.schemaVersion, "0.1");
 });
 
 // ---------- T-206: plan renderer ----------
