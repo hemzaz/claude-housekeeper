@@ -37,6 +37,8 @@ Options:
   --home=<path>       Claude home root (default: $CLAUDE_HOME or ~/.claude).
   --config=<path>     Override the housekeeper config path.
   --max-files=<n>     Bound the projects-tree walk; emits home.scan_budget_hit if hit.
+  --confirm           Required by mutation commands when they refuse in v0.1
+                        (clean/harden/rollback); kept on the surface for future use.
   -h, --help          Show this help and exit.
   -v, --version       Print version and exit.
 
