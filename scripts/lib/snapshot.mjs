@@ -10,7 +10,9 @@ import {
   lstat,
   readlink,
   readFile,
+  rm,
   unlink,
+  readdir,
   stat
 } from "node:fs/promises";
 import { join, basename } from "node:path";
@@ -387,4 +389,231 @@ export async function takeSnapshot(home, opts = {}) {
   await atomicWrite(manifestPath, JSON.stringify(manifest, null, 2) + os.EOL);
 
   return { opId, manifest };
+}
+
+// ── v0.2 I/O functions — T-604, T-702, T-703 ─────────────────────────────────
+
+/**
+ * Thrown by applyOperation when the manifest is not in the expected status.
+ * Prevents invalid state machine transitions.
+ */
+export class OperationStateError extends Error {
+  constructor(id, expected, actual) {
+    super(`Operation ${id}: expected status '${expected}', got '${actual}'`);
+    this.name = "OperationStateError";
+    this.code = "OPERATION_STATE_ERROR";
+    this.operationId = id;
+    this.expected = expected;
+    this.actual = actual;
+  }
+}
+
+/**
+ * Thrown by applyOperation when a file's sha256 no longer matches sha256Before.
+ * Means the file was mutated between snapshot and apply; no mutation proceeds.
+ */
+export class SnapshotDriftError extends Error {
+  constructor(filePath, expected, actual) {
+    super(`File changed since snapshot was taken: ${filePath}`);
+    this.name = "SnapshotDriftError";
+    this.code = "SNAPSHOT_DRIFT";
+    this.filePath = filePath;
+    this.expected = expected;
+    this.actual = actual;
+  }
+}
+
+/**
+ * readManifest(home, id) — read and parse an operation manifest from disk.
+ * Returns the parsed manifest object. Throws on I/O or JSON parse error.
+ */
+async function readManifest(home, id) {
+  const manifestPath = join(home, ".claude", "housekeeper", "operations", `${id}.json`);
+  const raw = await readFile(manifestPath, "utf8");
+  return JSON.parse(raw);
+}
+
+/**
+ * gcSnapshots(home) — Garbage-collect terminal operation manifests and their
+ * snapshot directories. Keeps the most recent 10 terminal operations
+ * (status in {"verified", "rolled_back"}). Removes older ones.
+ *
+ * Per Q4 decision: GC MUST NOT be called from diagnose. Call only from
+ * clean/rollback paths before taking a new snapshot.
+ *
+ * Returns { removed: [...op_ids], kept: [...op_ids] }.
+ */
+export async function gcSnapshots(home) {
+  const operationsDir = join(home, ".claude", "housekeeper", "operations");
+
+  // Read all manifest files; ignore directory if absent.
+  let entries;
+  try {
+    entries = await readdir(operationsDir);
+  } catch {
+    return { removed: [], kept: [] };
+  }
+
+  const jsonEntries = entries.filter((e) => e.endsWith(".json"));
+
+  // Parse each manifest; skip unreadable files gracefully.
+  const manifests = [];
+  for (const filename of jsonEntries) {
+    const id = filename.slice(0, -5); // strip ".json"
+    try {
+      const raw = await readFile(join(operationsDir, filename), "utf8");
+      const manifest = JSON.parse(raw);
+      manifests.push({ id, manifest });
+    } catch {
+      // Unreadable or corrupt manifest — leave for the interrupted-op detector.
+    }
+  }
+
+  // Separate terminal from non-terminal. Only terminal ones are GC candidates.
+  const GC_TERMINAL = new Set(["verified", "rolled_back"]);
+  const terminal = manifests.filter((m) => GC_TERMINAL.has(m.manifest.status));
+  const nonTerminal = manifests.filter((m) => !GC_TERMINAL.has(m.manifest.status));
+
+  // Sort terminal manifests chronologically by op id (timestamp prefix gives order).
+  terminal.sort((a, b) => {
+    if (a.id < b.id) return -1;
+    if (a.id > b.id) return 1;
+    return 0;
+  });
+
+  // Keep the most recent 10; remove anything older.
+  const KEEP_COUNT = 10;
+  const toKeep = terminal.slice(-KEEP_COUNT);
+  const toRemove = terminal.slice(0, terminal.length - KEEP_COUNT);
+
+  const removed = [];
+  for (const { id } of toRemove) {
+    // Delete snapshot directory recursively.
+    const snapshotDir = join(home, ".claude", "housekeeper", "snapshots", id);
+    try {
+      await rm(snapshotDir, { recursive: true, force: true });
+    } catch {
+      // Directory may not exist if snapshot write failed; ignore.
+    }
+    // Delete the manifest file.
+    try {
+      await unlink(join(operationsDir, `${id}.json`));
+    } catch {
+      // Already gone; ignore.
+    }
+    removed.push(id);
+  }
+
+  const kept = [
+    ...nonTerminal.map((m) => m.id),
+    ...toKeep.map((m) => m.id)
+  ];
+
+  return { removed, kept };
+}
+
+/**
+ * applyOperation(id, home, ops) — apply caller-provided mutation functions to
+ * each snapshotted file and record sha256After in the manifest.
+ *
+ * Pre-condition: manifest.status === "snapshot_taken". Throws OperationStateError
+ * otherwise.
+ *
+ * Pre-apply drift check: re-hashes each file before calling ops[i].apply(). If
+ * the hash no longer matches sha256Before, throws SnapshotDriftError and halts
+ * without mutating any file.
+ *
+ * Per-file failure: if ops[i].apply() throws, sets partialApply: true on the
+ * manifest and marks that file's applied: false. Continues with remaining files.
+ * Per Q5 decision: does NOT trigger rollback — that is deferred to T-704.
+ *
+ * Status transitions snapshot_taken → applied on completion.
+ *
+ * Returns the updated manifest object.
+ */
+export async function applyOperation(id, home, ops) {
+  const manifest = await readManifest(home, id);
+
+  if (manifest.status !== "snapshot_taken") {
+    throw new OperationStateError(id, "snapshot_taken", manifest.status);
+  }
+
+  // Pre-apply drift check: verify all files before mutating any.
+  // Per docs/snapshot-architecture.md §5: abort if any file changed.
+  for (let i = 0; i < manifest.files.length; i++) {
+    const entry = manifest.files[i];
+    const currentHash = await hashFile(entry.originalPath);
+    if (currentHash !== entry.sha256Before) {
+      throw new SnapshotDriftError(entry.originalPath, entry.sha256Before, currentHash);
+    }
+  }
+
+  // Apply mutations file by file, tolerating per-file failures.
+  let hadFailure = false;
+  for (let i = 0; i < manifest.files.length; i++) {
+    const entry = manifest.files[i];
+    try {
+      await ops[i].apply(entry.originalPath);
+      // Record post-apply hash.
+      entry.sha256After = await hashFile(entry.originalPath);
+    } catch {
+      hadFailure = true;
+      manifest.partialApply = true;
+      entry.applied = false;
+    }
+  }
+
+  // Suppress unused-variable warning — hadFailure drives partialApply already set above.
+  void hadFailure;
+
+  manifest.status = "applied";
+  manifest.appliedAt = new Date().toISOString();
+
+  const manifestPath = join(home, ".claude", "housekeeper", "operations", `${id}.json`);
+  await atomicWrite(manifestPath, JSON.stringify(manifest, null, 2) + os.EOL);
+
+  return manifest;
+}
+
+/**
+ * verify(id, home) — verify that each applied file's current sha256 matches
+ * sha256After recorded in the manifest.
+ *
+ * Pre-condition: manifest.status === "applied". Throws OperationStateError otherwise.
+ *
+ * On all-match: transitions status to "verified" and writes the manifest.
+ * On any mismatch: sets verifyFailure: true on the affected file entries;
+ *   status remains "applied" (surfaces via interrupted_operation detector).
+ *
+ * Returns the updated manifest object.
+ */
+export async function verify(id, home) {
+  const manifest = await readManifest(home, id);
+
+  if (manifest.status !== "applied") {
+    throw new OperationStateError(id, "applied", manifest.status);
+  }
+
+  let allMatch = true;
+  for (const entry of manifest.files) {
+    // Only verify files that were successfully applied (have a sha256After).
+    if (entry.sha256After === null || entry.sha256After === undefined) {
+      continue;
+    }
+    const actual = await hashFile(entry.originalPath);
+    if (actual !== entry.sha256After) {
+      entry.verifyFailure = true;
+      allMatch = false;
+    }
+  }
+
+  if (allMatch) {
+    manifest.status = "verified";
+    manifest.verifiedAt = new Date().toISOString();
+  }
+
+  const manifestPath = join(home, ".claude", "housekeeper", "operations", `${id}.json`);
+  await atomicWrite(manifestPath, JSON.stringify(manifest, null, 2) + os.EOL);
+
+  return manifest;
 }
