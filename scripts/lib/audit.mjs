@@ -788,11 +788,13 @@ function detectInterruptedOperation(context) {
     const file = path.join(opsDir, name);
     const parsed = readJson(file);
     if (!parsed.ok || !parsed.value) continue;
-    if (["verified", "rolled_back", "aborted"].includes(parsed.value.status)) continue;
+    const isLegacy = parsed.value.schemaVersion !== "0.2";
+    if (!isLegacy && ["verified", "rolled_back", "aborted"].includes(parsed.value.status)) continue;
     manifests.push({
       file,
       opId: path.basename(file, ".json"),
-      status: parsed.value.status || "unknown"
+      status: isLegacy ? "planned" : (parsed.value.status || "unknown"),
+      legacy: isLegacy
     });
   }
   if (manifests.length === 0) return null;
@@ -800,6 +802,19 @@ function detectInterruptedOperation(context) {
   const recoveryStep = first.status === "snapshot_taken"
     ? `rollback ${first.opId} --abort`
     : `rollback ${first.opId}`;
+  const structuralEvidence = first.legacy
+    ? [
+        `operation id ${first.opId} exists`,
+        "manifest schemaVersion is legacy",
+        "status assumed planned"
+      ]
+    : [
+        `operation id ${first.opId} exists`,
+        `manifest status is ${first.status}`
+      ];
+  const summary = first.legacy
+    ? `Found legacy operation manifest (pre-v0.2); status assumed planned for ${first.opId}`
+    : `Housekeeper operation ${first.opId} is interrupted with status ${first.status}`;
   return {
     id: "housekeeper.interrupted_operation",
     class: "integrity",
@@ -815,14 +830,11 @@ function detectInterruptedOperation(context) {
       confidence: "high"
     }),
     evidence: {
-      structural: [
-        `operation id ${first.opId} exists`,
-        `manifest status is ${first.status}`
-      ],
+      structural: structuralEvidence,
       reversibility: ["manifest-present-but-incomplete"]
     },
     missingKeys: ["recovery decision for interrupted operation"],
-    summary: `Housekeeper operation ${first.opId} is interrupted with status ${first.status}`,
+    summary,
     nextAllowedStep: recoveryStep,
     blockedActions: [
       "start new mutation operation",
