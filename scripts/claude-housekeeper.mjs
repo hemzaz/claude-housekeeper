@@ -35,7 +35,7 @@ const VALID_COMMANDS = new Set([
 
 const OPERATION_ID_PATTERN = /^op_[0-9]{14}_[0-9a-f]{8}$/;
 
-const HELP_TEXT = `claude-housekeeper — read-only Claude Code home inspection.
+const HELP_TEXT = `claude-housekeeper — Claude Code home inspection and guarded cleanup.
 
 Usage:
   claude-housekeeper [command] [options]
@@ -44,8 +44,8 @@ Commands:
   diagnose            Read-only report (default if omitted).
   plan                Detailed per-finding plan with paths and next steps.
   verify              Run live Claude CLI smoketest probes.
-  clean               Refuses mutation in v0.1 (snapshot/rollback not yet shipped).
-  harden              Refuses mutation in v0.1.
+  clean               Snapshot-backed cleanup for one approved finding.
+  harden              Planned; refuses mutation.
   rollback <id>       Restore a named Housekeeper operation snapshot.
 
 Options:
@@ -57,16 +57,19 @@ Options:
   --config=<path>     Override the housekeeper config path.
   --max-files=<n>     Bound the projects-tree walk; emits home.scan_budget_hit if hit.
   --dry-run           For rollback, print the rollback plan without changing files.
-  --confirm           Arm the mutation path for clean. Without this flag, clean
-                        refuses mutation (dry-run only). REQUIRED to actually
-                        mutate, but mutation is still blocked until --yes is passed.
+  --confirm           Arm the mutation path for clean or rollback. Without this
+                        flag, mutation-capable commands refuse mutation
+                        (dry-run only). REQUIRED to actually mutate, but
+                        mutation is still blocked until --yes is passed.
   --yes               Skip the consent prompt. REQUIRED in combination with
                         --confirm to actually mutate. Designed for CI / scripted
                         runs; matches the no-stdin convention.
   --target=<id>       Detector id of the finding to clean (e.g.
-                        plugin.cache_unreferenced). REQUIRED when --confirm is set.
+                        plugin.cache_unreferenced). REQUIRED when clean
+                        --confirm is set.
   --path=<path>       Absolute path of the finding to clean. REQUIRED when
-                        --confirm is set. Must match a path from \`diagnose\`.
+                        clean --confirm is set. Must match a path from
+                        \`diagnose\`.
   -h, --help          Show this help and exit.
   -v, --version       Print version and exit.
 

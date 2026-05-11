@@ -1,6 +1,6 @@
 ---
-description: Inspect Claude Code home state with read-only Housekeeper diagnostics
-argument-hint: '[diagnose|plan|verify] [--safe] [--json] [--redact] [--scope=settings|plugins|registry|housekeeper|all] [--home=/path] [--max-files=N] [--config=/path]'
+description: Inspect Claude Code home state and run guarded Housekeeper cleanup/rollback
+argument-hint: '[diagnose|plan|verify|clean|rollback] [--safe] [--json] [--redact] [--scope=settings|plugins|registry|housekeeper|all] [--home=/path] [--max-files=N] [--config=/path]'
 disable-model-invocation: true
 allowed-tools: Bash(node:*), Bash(claude:*)
 ---
@@ -12,13 +12,14 @@ Raw slash-command arguments:
 
 Default behavior:
 - No arguments means `diagnose`.
-- `diagnose` and `plan` are read-only.
+- `diagnose`, `plan`, and `verify` are read-only.
 - `--safe` adds a stricter posture: parses configuration only, refuses to start MCP servers, refuses to run hooks.
 - `--redact` collapses the home prefix to `~` and scrubs secrets, tokens, and credentials so the output is share-safe.
 - `--scope` defaults to `all`. Valid values: `settings`, `plugins`, `registry`, `housekeeper`, `all`.
-- The current first wedge is read-only diagnosis of broken hooks and plugin cache drift.
-- Treat output as a report, not permission to mutate.
-- `clean`, `harden`, and `rollback` exist on the command surface but refuse mutation in v0.1 (per `docs/build-readiness.md` §4); they are not listed in the suggested first-line argument set.
+- `clean --confirm --yes --target=plugin.cache_unreferenced --path=<absolute path>` can remove one outside-grace plugin cache version after snapshotting it.
+- `rollback <id> --confirm --yes` restores a Housekeeper operation from its snapshot.
+- Treat diagnostic output as a report, not permission to mutate.
+- `harden` exists on the command surface but still refuses mutation.
 - Run `claude-housekeeper --help` from a shell for the full flag list and examples.
 
 Run:
