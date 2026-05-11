@@ -10,7 +10,12 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { composeRollbackPlan } from "../scripts/lib/rollback-plan.mjs";
+import {
+  composeRollbackPlan,
+  validateRollbackPlan,
+  PlanDriftError,
+  SnapshotIntegrityError
+} from "../scripts/lib/rollback-plan.mjs";
 import { applyOperation, takeSnapshot, verify } from "../scripts/lib/snapshot.mjs";
 
 async function makeAppliedOperation() {
@@ -159,4 +164,63 @@ test("composeRollbackPlan refuses drift after verified deletion", async () => {
   assert.equal(plan.refused.length, 1);
   assert.equal(plan.refused[0].reason, "drift-detected");
   assert.equal(plan.refused[0].targetPath, restoredPath);
+});
+
+test("validateRollbackPlan happy path adds validatedAt", async () => {
+  const { claudeHome, opId } = await makeAppliedOperation();
+  const plan = await composeRollbackPlan(claudeHome, opId);
+
+  const validated = await validateRollbackPlan(plan, claudeHome);
+
+  assert.equal(validated.opId, opId);
+  assert.equal(validated.refused.length, 0);
+  assert.match(validated.validatedAt, /^\d{4}-\d{2}-\d{2}T/);
+});
+
+test("validateRollbackPlan re-detects drift after compose", async () => {
+  const { claudeHome, opId, manifest } = await makeAppliedOperation();
+  const plan = await composeRollbackPlan(claudeHome, opId);
+  const restoredPath = manifest.files[0].originalPath;
+  mkdirSync(path.dirname(restoredPath), { recursive: true });
+  writeFileSync(restoredPath, "changed after compose\n");
+
+  await assert.rejects(
+    () => validateRollbackPlan(plan, claudeHome),
+    (err) => {
+      assert.ok(err instanceof PlanDriftError);
+      assert.equal(err.targetPath, restoredPath);
+      return true;
+    }
+  );
+});
+
+test("validateRollbackPlan rejects a missing snapshot file", async () => {
+  const { claudeHome, opId, manifest } = await makeAppliedOperation();
+  const plan = await composeRollbackPlan(claudeHome, opId);
+  unlinkSync(manifest.files[0].snapshotPath);
+
+  await assert.rejects(
+    () => validateRollbackPlan(plan, claudeHome),
+    (err) => {
+      assert.ok(err instanceof SnapshotIntegrityError);
+      assert.equal(err.snapshotPath, manifest.files[0].snapshotPath);
+      return true;
+    }
+  );
+});
+
+test("validateRollbackPlan rejects a corrupted snapshot file", async () => {
+  const { claudeHome, opId, manifest } = await makeAppliedOperation();
+  const plan = await composeRollbackPlan(claudeHome, opId);
+  writeFileSync(manifest.files[0].snapshotPath, "corrupted snapshot bytes\n");
+
+  await assert.rejects(
+    () => validateRollbackPlan(plan, claudeHome),
+    (err) => {
+      assert.ok(err instanceof SnapshotIntegrityError);
+      assert.equal(err.snapshotPath, manifest.files[0].snapshotPath);
+      assert.equal(err.expectedHash, manifest.files[0].sha256Before);
+      return true;
+    }
+  );
 });
