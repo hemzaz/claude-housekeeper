@@ -10,7 +10,12 @@ import {
   SnapshotRefusedError,
   SnapshotBudgetError,
   MAX_OPERATION_FILES,
-  MAX_OPERATION_BYTES
+  MAX_OPERATION_BYTES,
+  gcSnapshots,
+  applyOperation,
+  verify,
+  OperationStateError,
+  SnapshotDriftError
 } from "../scripts/lib/snapshot.mjs";
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -446,4 +451,395 @@ test("T-603 refusal does not leak: no snapshot or manifest files on budget refus
   assert.equal(await fileExists(snapshotsDir), false, "snapshots dir must not exist on budget refusal");
   const operationsDir = join(home, ".claude", "housekeeper", "operations");
   assert.equal(await fileExists(operationsDir), false, "operations dir must not exist on budget refusal");
+});
+
+// ── T-604 — gcSnapshots ───────────────────────────────────────────────────────
+
+/**
+ * Write a fake operation manifest directly (without takeSnapshot) so we can
+ * create many verified manifests quickly without actual file targets.
+ */
+async function writeFakeManifest(home, id, status) {
+  const { mkdir: mkdirFs, writeFile: writeFileFs } = await import("node:fs/promises");
+  const operationsDir = join(home, ".claude", "housekeeper", "operations");
+  await mkdirFs(operationsDir, { recursive: true });
+  const manifest = {
+    schemaVersion: "0.2",
+    id,
+    home,
+    status,
+    createdAt: new Date().toISOString(),
+    capturedAt: new Date().toISOString(),
+    appliedAt: null,
+    verifiedAt: null,
+    rolledBackAt: null,
+    abortedAt: null,
+    housekeeperVersion: "0.2.0",
+    command: "clean",
+    mode: "confirm",
+    consentSummary: "test",
+    files: [],
+    partialApply: false,
+    blockedByProtection: []
+  };
+  await writeFileFs(join(operationsDir, `${id}.json`), JSON.stringify(manifest, null, 2) + "\n");
+}
+
+/**
+ * Create a fake snapshot directory for an op id so GC has something to delete.
+ */
+async function createFakeSnapshotDir(home, id) {
+  const { mkdir: mkdirFs } = await import("node:fs/promises");
+  const snapshotDir = join(home, ".claude", "housekeeper", "snapshots", id);
+  await mkdirFs(snapshotDir, { recursive: true });
+}
+
+/**
+ * Generate a chronological op id with a given index (so sort order is deterministic).
+ * Uses a fixed base timestamp with the index padded into the seconds field.
+ */
+function makeChronologicalOpId(index) {
+  const sec = String(index).padStart(2, "0");
+  const hex = String(index).padStart(8, "0");
+  // e.g. op_20260101000000_00000000, op_20260101000001_00000001, ...
+  return `op_202601010000${sec}_${hex}`;
+}
+
+test("T-604 gcSnapshots removes the 2 oldest of 12 verified manifests", async () => {
+  const home = await makeSyntheticHome();
+
+  // Create 12 verified manifests with chronological ids.
+  for (let i = 0; i < 12; i++) {
+    const id = makeChronologicalOpId(i);
+    await writeFakeManifest(home, id, "verified");
+    await createFakeSnapshotDir(home, id);
+  }
+
+  const result = await gcSnapshots(home);
+
+  assert.equal(result.removed.length, 2, "should remove 2 oldest");
+  assert.equal(result.kept.length, 10, "should keep 10 most recent");
+
+  // The removed ones should be the two with the smallest (oldest) ids.
+  const removedSorted = [...result.removed].sort();
+  assert.equal(removedSorted[0], makeChronologicalOpId(0));
+  assert.equal(removedSorted[1], makeChronologicalOpId(1));
+});
+
+test("T-604 gcSnapshots deletes snapshot directory for removed ops", async () => {
+  const home = await makeSyntheticHome();
+
+  for (let i = 0; i < 12; i++) {
+    const id = makeChronologicalOpId(i);
+    await writeFakeManifest(home, id, "verified");
+    await createFakeSnapshotDir(home, id);
+  }
+
+  await gcSnapshots(home);
+
+  // The 2 oldest snapshot dirs should be gone.
+  const snapshotBase = join(home, ".claude", "housekeeper", "snapshots");
+  assert.equal(
+    await fileExists(join(snapshotBase, makeChronologicalOpId(0))),
+    false,
+    "oldest snapshot dir should be deleted"
+  );
+  assert.equal(
+    await fileExists(join(snapshotBase, makeChronologicalOpId(1))),
+    false,
+    "second-oldest snapshot dir should be deleted"
+  );
+  // The 10th (newest) should still exist.
+  assert.ok(
+    await fileExists(join(snapshotBase, makeChronologicalOpId(11))),
+    "newest snapshot dir should remain"
+  );
+});
+
+test("T-604 gcSnapshots preserves non-terminal manifests (planned)", async () => {
+  const home = await makeSyntheticHome();
+
+  // 12 verified + 1 planned — the planned one must survive regardless.
+  for (let i = 0; i < 12; i++) {
+    const id = makeChronologicalOpId(i);
+    await writeFakeManifest(home, id, "verified");
+    await createFakeSnapshotDir(home, id);
+  }
+  const plannedId = "op_20260201000000_ffffffff";
+  await writeFakeManifest(home, plannedId, "planned");
+
+  const result = await gcSnapshots(home);
+
+  assert.ok(result.kept.includes(plannedId), "planned op must be in kept");
+  assert.ok(!result.removed.includes(plannedId), "planned op must NOT be removed");
+
+  // Its manifest file should still exist on disk.
+  const operationsDir = join(home, ".claude", "housekeeper", "operations");
+  assert.ok(
+    await fileExists(join(operationsDir, `${plannedId}.json`)),
+    "planned manifest file must not be deleted"
+  );
+});
+
+test("T-604 gcSnapshots with fewer than 10 terminal ops removes nothing", async () => {
+  const home = await makeSyntheticHome();
+
+  // Only 5 verified manifests — all should be kept.
+  for (let i = 0; i < 5; i++) {
+    const id = makeChronologicalOpId(i);
+    await writeFakeManifest(home, id, "verified");
+  }
+
+  const result = await gcSnapshots(home);
+
+  assert.equal(result.removed.length, 0, "nothing should be removed when <= 10 terminal ops");
+  assert.equal(result.kept.length, 5);
+});
+
+test("T-604 gcSnapshots on empty operations dir returns empty arrays", async () => {
+  const home = await makeSyntheticHome();
+  // Don't create any operations dir.
+
+  const result = await gcSnapshots(home);
+
+  assert.deepEqual(result.removed, []);
+  assert.deepEqual(result.kept, []);
+});
+
+// ── T-702 — applyOperation ────────────────────────────────────────────────────
+
+test("T-702 applyOperation happy path: status transitions to applied", async () => {
+  const home = await makeSyntheticHome();
+  const content = "original content\n";
+  await writeFile(join(home, "target.txt"), content);
+
+  const { opId } = await takeSnapshot(home, {
+    targets: [join(home, "target.txt")]
+  });
+
+  const newContent = "mutated content\n";
+  const ops = [
+    { apply: async (p) => writeFile(p, newContent) }
+  ];
+
+  const result = await applyOperation(opId, home, ops);
+
+  assert.equal(result.status, "applied");
+  assert.ok(result.appliedAt !== null, "appliedAt should be set");
+});
+
+test("T-702 applyOperation happy path: sha256After matches post-apply file hash", async () => {
+  const home = await makeSyntheticHome();
+  const content = "original\n";
+  await writeFile(join(home, "file.txt"), content);
+
+  const { opId } = await takeSnapshot(home, {
+    targets: [join(home, "file.txt")]
+  });
+
+  const newContent = "after mutation\n";
+  const ops = [
+    { apply: async (p) => writeFile(p, newContent) }
+  ];
+
+  const result = await applyOperation(opId, home, ops);
+
+  const expectedHash = sha256Hex(Buffer.from(newContent, "utf8"));
+  assert.equal(result.files[0].sha256After, expectedHash);
+});
+
+test("T-702 applyOperation drift detection: throws SnapshotDriftError when file mutated externally", async () => {
+  const home = await makeSyntheticHome();
+  await writeFile(join(home, "drifted.txt"), "original\n");
+
+  const { opId } = await takeSnapshot(home, {
+    targets: [join(home, "drifted.txt")]
+  });
+
+  // Mutate the file externally AFTER snapshot but BEFORE apply.
+  await writeFile(join(home, "drifted.txt"), "changed externally\n");
+
+  const ops = [
+    { apply: async (p) => writeFile(p, "should not reach\n") }
+  ];
+
+  const err = await applyOperation(opId, home, ops).then(() => null, (e) => e);
+
+  assert.ok(err instanceof SnapshotDriftError, "should throw SnapshotDriftError");
+  assert.equal(err.code, "SNAPSHOT_DRIFT");
+  assert.ok(err.filePath.endsWith("drifted.txt"));
+});
+
+test("T-702 drift detection: no mutation proceeds after SnapshotDriftError", async () => {
+  const home = await makeSyntheticHome();
+  const original = "untouched original\n";
+  await writeFile(join(home, "safe.txt"), original);
+
+  const { opId } = await takeSnapshot(home, {
+    targets: [join(home, "safe.txt")]
+  });
+
+  await writeFile(join(home, "safe.txt"), "drifted\n");
+
+  let applyCalled = false;
+  const ops = [
+    {
+      apply: async () => {
+        applyCalled = true;
+        await writeFile(join(home, "safe.txt"), "mutated by apply\n");
+      }
+    }
+  ];
+
+  try {
+    await applyOperation(opId, home, ops);
+  } catch {
+    // expected SnapshotDriftError
+  }
+
+  assert.equal(applyCalled, false, "apply function must not be called after drift detection");
+});
+
+test("T-702 partial apply: ops[1].apply throws → partialApply:true, file[1].applied:false", async () => {
+  const home = await makeSyntheticHome();
+  await writeFile(join(home, "f0.txt"), "f0\n");
+  await writeFile(join(home, "f1.txt"), "f1\n");
+  await writeFile(join(home, "f2.txt"), "f2\n");
+
+  const { opId } = await takeSnapshot(home, {
+    targets: [
+      join(home, "f0.txt"),
+      join(home, "f1.txt"),
+      join(home, "f2.txt")
+    ]
+  });
+
+  const ops = [
+    { apply: async (p) => writeFile(p, "f0-mutated\n") },
+    {
+      apply: async () => {
+        throw new Error("simulated apply failure");
+      }
+    },
+    { apply: async (p) => writeFile(p, "f2-mutated\n") }
+  ];
+
+  const result = await applyOperation(opId, home, ops);
+
+  assert.equal(result.partialApply, true, "partialApply should be true");
+  assert.equal(result.files[1].applied, false, "file[1].applied should be false");
+  assert.equal(result.status, "applied", "status should still be applied");
+});
+
+test("T-702 partial apply: file[0] and file[2] have sha256After set on success", async () => {
+  const home = await makeSyntheticHome();
+  await writeFile(join(home, "g0.txt"), "g0\n");
+  await writeFile(join(home, "g1.txt"), "g1\n");
+  await writeFile(join(home, "g2.txt"), "g2\n");
+
+  const { opId } = await takeSnapshot(home, {
+    targets: [
+      join(home, "g0.txt"),
+      join(home, "g1.txt"),
+      join(home, "g2.txt")
+    ]
+  });
+
+  const ops = [
+    { apply: async (p) => writeFile(p, "g0-mutated\n") },
+    { apply: async () => { throw new Error("fail"); } },
+    { apply: async (p) => writeFile(p, "g2-mutated\n") }
+  ];
+
+  const result = await applyOperation(opId, home, ops);
+
+  assert.ok(result.files[0].sha256After !== null, "file[0] sha256After should be set");
+  assert.ok(result.files[2].sha256After !== null, "file[2] sha256After should be set");
+  assert.equal(result.files[1].sha256After, null, "file[1] sha256After should remain null");
+});
+
+test("T-702 applyOperation throws OperationStateError when status is not snapshot_taken", async () => {
+  const home = await makeSyntheticHome();
+  await writeFile(join(home, "h.txt"), "h\n");
+
+  const { opId } = await takeSnapshot(home, { targets: [join(home, "h.txt")] });
+
+  // Apply once to transition to "applied".
+  await applyOperation(opId, home, [{ apply: async (p) => writeFile(p, "h-mutated\n") }]);
+
+  // Attempting to apply again should throw OperationStateError.
+  const err = await applyOperation(opId, home, [
+    { apply: async (p) => writeFile(p, "h-again\n") }
+  ]).then(() => null, (e) => e);
+
+  assert.ok(err instanceof OperationStateError, "should throw OperationStateError");
+  assert.equal(err.code, "OPERATION_STATE_ERROR");
+  assert.equal(err.expected, "snapshot_taken");
+  assert.equal(err.actual, "applied");
+});
+
+// ── T-703 — verify ────────────────────────────────────────────────────────────
+
+test("T-703 verify transitions status to verified when all sha256 match", async () => {
+  const home = await makeSyntheticHome();
+  const content = "verify me\n";
+  await writeFile(join(home, "v.txt"), content);
+
+  const { opId } = await takeSnapshot(home, { targets: [join(home, "v.txt")] });
+
+  const mutated = "verify me mutated\n";
+  await applyOperation(opId, home, [{ apply: async (p) => writeFile(p, mutated) }]);
+
+  const result = await verify(opId, home);
+
+  assert.equal(result.status, "verified");
+  assert.ok(result.verifiedAt !== null, "verifiedAt should be set");
+});
+
+test("T-703 verify sha256 round-trip: sha256After matches content written by apply", async () => {
+  const home = await makeSyntheticHome();
+  await writeFile(join(home, "rr.txt"), "round-trip original\n");
+
+  const { opId } = await takeSnapshot(home, { targets: [join(home, "rr.txt")] });
+
+  const mutated = "round-trip mutated\n";
+  await applyOperation(opId, home, [{ apply: async (p) => writeFile(p, mutated) }]);
+
+  const result = await verify(opId, home);
+
+  const expectedHash = sha256Hex(Buffer.from(mutated, "utf8"));
+  assert.equal(result.files[0].sha256After, expectedHash);
+  assert.equal(result.status, "verified");
+});
+
+test("T-703 verify leaves status applied and sets verifyFailure:true on corrupted file", async () => {
+  const home = await makeSyntheticHome();
+  await writeFile(join(home, "corrupt.txt"), "original\n");
+
+  const { opId } = await takeSnapshot(home, { targets: [join(home, "corrupt.txt")] });
+
+  const mutated = "mutated by apply\n";
+  await applyOperation(opId, home, [{ apply: async (p) => writeFile(p, mutated) }]);
+
+  // Corrupt the file after apply but before verify.
+  await writeFile(join(home, "corrupt.txt"), "corrupted after apply\n");
+
+  const result = await verify(opId, home);
+
+  assert.equal(result.status, "applied", "status should remain applied on verify failure");
+  assert.equal(result.files[0].verifyFailure, true, "verifyFailure should be true on mismatch");
+});
+
+test("T-703 verify throws OperationStateError when status is not applied", async () => {
+  const home = await makeSyntheticHome();
+  await writeFile(join(home, "pre-verify.txt"), "x\n");
+
+  const { opId } = await takeSnapshot(home, { targets: [join(home, "pre-verify.txt")] });
+
+  // Status is snapshot_taken, not applied — verify should refuse.
+  const err = await verify(opId, home).then(() => null, (e) => e);
+
+  assert.ok(err instanceof OperationStateError, "should throw OperationStateError");
+  assert.equal(err.expected, "applied");
+  assert.equal(err.actual, "snapshot_taken");
 });
