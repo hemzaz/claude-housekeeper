@@ -92,13 +92,13 @@ No files changed.
 
 PRIMARY
   stance: inform
-  finding: no findings
-  evidence: none
-  missing key: none
+  finding: no first-wedge issues found
+  evidence: settings parsed; plugin registry parsed; hook direct paths exist
+  missing key: live Claude probes were not run in safe mode
   next step: none
 
 STANCE SUMMARY
-  inform   0
+  inform   1
   watch    0
   review   0
   probe    0
@@ -116,6 +116,9 @@ SCAN
   mode: safe
   degraded: no
   skipped: live Claude probes
+
+BLOCKED ACTIONS
+  claim healthy
 ```
 
 `--home` takes a normal user home directory and resolves its `.claude`
@@ -247,6 +250,7 @@ registry, and Housekeeper's own operation manifest. Detector ids:
 - `housekeeper.operations_unreadable`
 - `home.not_found`
 - `home.scan_budget_hit`
+- `home.clean`
 
 Hygiene and state findings (large logs, zombie state, corrupt backups,
 drift directories, file-history age) are deferred to v0.2 alongside the

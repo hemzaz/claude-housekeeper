@@ -71,7 +71,8 @@ const ALWAYS_ON_DETECTORS = new Set([
   "housekeeper.config_invalid",
   "housekeeper.operations_unreadable",
   "home.not_found",
-  "home.scan_budget_hit"
+  "home.scan_budget_hit",
+  "home.clean"
 ]);
 
 // ---------- entry points ----------
@@ -122,6 +123,13 @@ export function assembleReport(home, options = {}) {
 
   // T-402: scan-budget orientation finding for the bounded projects walk.
   push(detectorOutputs, selected, detectScanBudget(context));
+
+  // home.clean — meta-detector: fires when no other detector emitted under
+  // the current scope. Single `inform` finding so callers know the audit
+  // ran and produced an empty findings array intentionally (not a crash).
+  if (detectorOutputs.length === 0) {
+    push(detectorOutputs, selected, detectHomeClean(context));
+  }
 
   const findings = detectorOutputs.map((raw) => buildFinding(raw, { home, mode, policyMatchesFor }));
 
@@ -244,7 +252,8 @@ const SAFE_MODE_LIMIT_BY_ID = {
   "registry.local_command_identical": "safe-mode-no-loader-key",
   "registry.local_command_diverged": "safe-mode-no-loader-key",
   "registry.broken_frontmatter": "safe-mode-no-loader-key",
-  "home.scan_budget_hit": "safe-mode-scan-budget"
+  "home.scan_budget_hit": "safe-mode-scan-budget",
+  "home.clean": "safe-mode-no-loader-key"
 };
 
 // Apply mode-driven surface.limits per docs/schemas.md and the fixture
@@ -949,6 +958,45 @@ function detectScanBudget(context) {
       "summarize scan as complete",
       "propose action from partial project-history evidence"
     ]
+  };
+}
+
+// home.clean — meta-detector. Emits a single `inform` finding when no other
+// detector emitted under the current scope. Surface and evidence shape match
+// the clean-home fixture golden so callers can rely on the structure.
+//
+// The "claim healthy" blockedAction is deliberate: a clean diagnose does NOT
+// prove the home is healthy; it only proves no first-wedge issue was found.
+// Loader-side evidence (live /hooks, /agents, MCP runtime state) is not
+// collected by safe-mode diagnose.
+function detectHomeClean(context) {
+  return {
+    id: "home.clean",
+    class: "orientation",
+    claimLevel: "observation",
+    targetPath: context.home,
+    surfaceHints: {},
+    surface: makeSurfaceClassification({
+      surfaceClass: "authored-config",
+      ownerClass: "user-owned",
+      loadBearingClass: "known-load-bearing",
+      sensitivityClass: "private-path",
+      executionClass: "inert",
+      rollbackClass: "snapshot-possible",
+      scopeClass: "in-scope",
+      confidence: "medium"
+    }),
+    evidence: {
+      structural: [
+        "settings parsed",
+        "plugin registry parsed",
+        "hook direct paths exist"
+      ]
+    },
+    missingKeys: ["live Claude probes were not run in safe mode"],
+    summary: "no first-wedge issues found",
+    nextAllowedStep: "none",
+    blockedActions: ["claim healthy"]
   };
 }
 
