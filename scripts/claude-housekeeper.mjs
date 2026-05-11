@@ -6,6 +6,14 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { assembleReport } from "./lib/audit.mjs";
 import { renderHumanReport, renderJsonReport, renderPlanReport } from "./lib/report.mjs";
+import {
+  composeCleanPlan,
+  validateCleanPlan,
+  executeCleanPlan,
+  LockHeldError,
+  PlanDriftError,
+  NotImplementedError
+} from "./lib/clean-plan.mjs";
 
 const VALID_COMMANDS = new Set([
   "diagnose",
@@ -43,6 +51,10 @@ Options:
   --yes               Skip the consent prompt. REQUIRED in combination with
                         --confirm to actually mutate. Designed for CI / scripted
                         runs; matches the no-stdin convention.
+  --target=<id>       Detector id of the finding to clean (e.g.
+                        plugin.cache_unreferenced). REQUIRED when --confirm is set.
+  --path=<path>       Absolute path of the finding to clean. REQUIRED when
+                        --confirm is set. Must match a path from \`diagnose\`.
   -h, --help          Show this help and exit.
   -v, --version       Print version and exit.
 
@@ -85,7 +97,9 @@ function parseArgs(argv) {
     home: process.env.CLAUDE_HOME || homedir(),
     configPath: null,
     rollbackId: null,
-    scanLimits: null
+    scanLimits: null,
+    target: null,
+    path: null
   };
 
   for (const arg of args) {
@@ -101,6 +115,8 @@ function parseArgs(argv) {
       options.scanLimits = options.scanLimits || {};
       options.scanLimits.maxFiles = Number(arg.slice("--max-files=".length));
     }
+    else if (arg.startsWith("--target=")) options.target = arg.slice("--target=".length);
+    else if (arg.startsWith("--path=")) options.path = arg.slice("--path=".length);
     else if (command === "rollback" && !options.rollbackId) options.rollbackId = arg;
     else throw new Error(`Unknown argument: ${arg} — run \`claude-housekeeper --help\` for usage.`);
   }
@@ -159,30 +175,136 @@ function runPlan(options) {
   else console.log(renderPlanReport(report, renderOpts));
 }
 
-function runClean(options) {
-  const mode = pickMode(options);
-  const report = assembleReport(options.home, {
-    scope: options.scope,
-    configPath: options.configPath,
-    mode,
-    scanLimits: options.scanLimits
-  });
-  const renderOpts = { redact: options.redact, home: options.home };
+function formatBytes(bytes) {
+  if (bytes >= 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GiB`;
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
+  return `${bytes} B`;
+}
+
+async function runClean(options) {
+  // Branch 1: no --confirm → dry-run plan view.
+  // (This branch is actually handled in the dispatcher early-exit gate, but kept here for clarity.)
   if (!options.confirm) {
-    console.log(renderPlanReport(report, renderOpts));
-    console.log("\nDRY-RUN — pass --confirm to arm mutation.");
+    const mode = pickMode(options);
+    const report = assembleReport(options.home, {
+      scope: options.scope,
+      configPath: options.configPath,
+      mode,
+      scanLimits: options.scanLimits
+    });
+    const renderOpts = { redact: options.redact, home: options.home };
+    if (options.json) printJson(renderJsonReport(report, renderOpts));
+    else console.log(renderPlanReport(report, renderOpts));
     process.exitCode = 0;
     return;
   }
-  if (!options.yes) {
-    console.log(renderPlanReport(report, renderOpts));
-    fail("\nRefusing mutation: --yes not passed. Pass --confirm --yes to skip the prompt and apply.", 2);
+
+  // Branch 2: --confirm but missing --target or --path.
+  if (!options.target || !options.path) {
+    fail("Missing --target or --path. Run `claude-housekeeper plan` to see candidates.", 2);
     return;
   }
-  // Both --confirm and --yes passed: mutation path armed and consented.
-  // TODO: T-704 will wire snapshot/apply/verify here.
-  console.log("TODO: T-704 will wire snapshot/apply/verify here.");
-  process.exitCode = 0;
+
+  // Branch 3: --confirm + --target + --path but no --yes.
+  if (!options.yes) {
+    // Show what would happen, then refuse.
+    const plan = await composeCleanPlan(options.home, {
+      target: options.target,
+      path: options.path
+    });
+    if (options.json) {
+      printJson({ plan });
+    } else {
+      console.log("HOUSEKEEPER CLEAN");
+      if (plan.operations.length > 0) {
+        const op = plan.operations[0];
+        console.log(`${plan.operations.length} operation planned. Op id: (pending)\n`);
+        console.log(`  ${op.mutationKind}  ${op.targetPath}  (${formatBytes(op.estimatedBytes)})\n`);
+      } else if (plan.refused.length > 0) {
+        for (const r of plan.refused) {
+          console.log(`Refusing: ${r.detectorId} is not cleanable in v0.2.0.`);
+          console.log(`Reason: ${r.reason}.`);
+        }
+      }
+    }
+    fail("Refusing mutation: --yes not passed. Pass --confirm --yes to skip the\nprompt and apply.", 2);
+    return;
+  }
+
+  // Branch 4: --confirm + --yes + --target + --path → full execute flow.
+  try {
+    const plan = await composeCleanPlan(options.home, {
+      target: options.target,
+      path: options.path
+    });
+
+    if (plan.refused.length > 0) {
+      if (options.json) {
+        printJson({ refused: plan.refused });
+      } else {
+        for (const r of plan.refused) {
+          console.log(`Refusing: ${r.detectorId} is not cleanable in v0.2.0.`);
+          console.log(`Reason: ${r.reason}.`);
+        }
+      }
+      process.exitCode = 2;
+      return;
+    }
+
+    const validated = await validateCleanPlan(plan, options.home);
+    const manifest = await executeCleanPlan(validated, options.home);
+
+    if (options.json) {
+      printJson({ manifest });
+      process.exitCode = manifest.status === "verified" ? 0 : 1;
+      return;
+    }
+
+    const op = plan.operations[0];
+    console.log("HOUSEKEEPER CLEAN");
+    console.log(`1 operation planned. Op id: ${manifest.opId}\n`);
+    console.log(`  ${op.mutationKind}  ${op.targetPath}  (${formatBytes(op.estimatedBytes)})\n`);
+    console.log(`  snapshot taken    → ${options.home}/housekeeper/snapshots/${manifest.opId}/...`);
+    console.log(`  applied           → directory removed`);
+    console.log(`  verified          → no residual files`);
+    console.log("");
+    console.log("DONE. Operation verified.");
+    console.log("");
+    console.log("RELOAD HINT");
+    console.log("  Run /reload-plugins in any active Claude Code session to drop the");
+    console.log("  cache reference. The plugins/data/ directory was preserved.");
+    console.log("");
+    console.log(`To roll back: claude-housekeeper rollback ${manifest.opId}`);
+
+    process.exitCode = manifest.status === "verified" ? 0 : 1;
+  } catch (err) {
+    if (err instanceof LockHeldError) {
+      if (options.json) {
+        printJson({ error: "lock-held", pid: err.lockManifest.pid, hostname: err.lockManifest.hostname });
+      } else {
+        fail(`Lock held by pid ${err.lockManifest.pid} on ${err.lockManifest.hostname} until ${err.lockManifest.stalenessAt}. If the prior run is no longer active, delete ${options.home}/housekeeper/lock and retry.`, 2);
+      }
+      return;
+    }
+    if (err instanceof PlanDriftError) {
+      if (options.json) {
+        printJson({ error: "plan-drift", expected: err.expectedHash, actual: err.actualHash });
+      } else {
+        fail("Plan drift detected: the home state changed between plan composition and execution. Re-run `clean` to pick up the latest state.", 2);
+      }
+      return;
+    }
+    if (err instanceof NotImplementedError) {
+      if (options.json) {
+        printJson({ error: "mutation-kind-not-implemented", mutationKind: err.mutationKind });
+      } else {
+        fail(`Mutation kind "${err.mutationKind}" is not implemented in v0.2.0.`, 2);
+      }
+      return;
+    }
+    throw err;
+  }
 }
 
 function runHarden() {
@@ -325,7 +447,7 @@ try {
       fail(`Claude home does not exist: ${options.home}`, 2);
     } else if (options.command === "diagnose") runDiagnose(options);
     else if (options.command === "plan") runPlan(options);
-    else if (options.command === "clean") runClean(options);
+    else if (options.command === "clean") await runClean(options);
     else if (options.command === "verify") runVerify(options);
     else if (options.command === "harden") runHarden(options);
     else if (options.command === "rollback") runRollback(options);
