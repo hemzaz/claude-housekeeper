@@ -57,7 +57,12 @@ const SHA256_RE = /\b([a-f0-9]{64})\b/g;
 
 // Token-shaped substring that survived structured transforms — used by the
 // failure-rule check. 24+ alnum (no separators) is treated as suspicious.
-const RESIDUAL_TOKEN_RE = /[A-Za-z0-9_/+]{24,}/;
+// Paths use `/`, so excluding it from the residual-token class avoids false
+// positives on deep filesystem paths (e.g. `~/plugins/cache/x/y/1.0.0`).
+// Real token shapes (JWTs, API keys, base64-ish blobs) are alphanumeric runs
+// without `/`; structured prefix patterns earlier in redactString catch the
+// `/`-bearing exceptions (Bearer, Env-var, URI creds) before this rule.
+const RESIDUAL_TOKEN_RE = /[A-Za-z0-9_+]{24,}/;
 
 // ---------- public API ----------
 

@@ -32,6 +32,7 @@ Source: `scripts/lib/report.mjs` `renderJsonReport()` plus
 | `findings[].claimLevel` | stable | evidence ladder level |
 | `findings[].stance` | stable | user-facing stance |
 | `findings[].summary` | stable | one-line human summary string |
+| `findings[].targetPath` | stable | path the finding targets; empty string when the finding is home-rooted or has no single path |
 | `findings[].surface` | stable | surface classification object |
 | `findings[].evidence` | stable | evidence arrays by key class |
 | `findings[].nextAllowedStep` | stable | string; the next step the stance permits |
