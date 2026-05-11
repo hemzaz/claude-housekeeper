@@ -119,7 +119,9 @@ above. Format: date, question id, decision, rationale, decided by._
 
 | Date | Q# | Decision | Rationale | Decided by |
 |---|---|---|---|---|
-| — | — | — | — | — |
+| 2026-05-11 | T-600 | Op id length is 26 chars, not 28 | `op_<3>+<14>+_<1>+<8>=26`. The spec §1 says "28 characters exactly" but the canonical example `op_20260511143022_a1b2c3d4` is 26. Implementation and tests use 26 per the example. Spec doc has a typo — propose fixing in a follow-up docs PR. | executor T-600 |
+| 2026-05-11 | T-600 | fsync-parent EINVAL on macOS is swallowed | macOS returns EINVAL when fsync is called on a directory fd. The rename is already durable on APFS/HFS+. Swallowing the error preserves cross-platform compatibility without weakening the durability guarantee on Linux (ext4 ordered). | executor T-600 |
+| 2026-05-11 | T-600 | no-mutation.test.mjs allowlists lib/snapshot.mjs | The v0.1 read-only invariant test must remain the guard for all other scripts/. snapshot.mjs is explicitly the T-600 designated mutation surface. An allowlist (not a wholesale relaxation) preserves the invariant for everything else. | executor T-600 |
 
 ---
 
