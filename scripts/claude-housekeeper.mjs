@@ -237,17 +237,38 @@ function runVerify() {
   );
   if (!probes.at(-1).ok) return printVerify(probes);
 
-  // T-403: subagent dispatch is opt-in for live probes; v0.1 keeps live probes
-  // minimal per docs/safe-mode.md and docs/truth-probe-catalog.md. Emit a
-  // documented SKIP rather than a misleading FAIL, and do NOT set non-zero
-  // exit when prior probes all passed.
-  probes.push({
-    label: "subagent dispatch",
-    skipped: true,
-    command: "claude subagent probe",
-    status: null,
-    output: "not implemented in v0.1; run `claude --help` manually"
-  });
+  // T-403: subagent dispatch probe.
+  //
+  // We ask Claude to use the Task tool to print the word READY. This exercises
+  // the exact capability that Housekeeper's future verify-subagent flow relies
+  // on: that the claude binary can dispatch a child agent task and return its
+  // output in a single -p call.
+  //
+  // Prompt design:
+  //   "Use the Task tool to run a subagent that prints READY"
+  //   --allowedTools "Task" permits Task (subagent dispatch) only.
+  //   We match /READY/ in the combined stdout+stderr.
+  //
+  // Failure semantics:
+  //   SKIP only when the claude binary is absent (caught by the binary probe
+  //   above which returns early). A present binary that cannot dispatch a
+  //   subagent is a genuine FAIL.
+  probes.push(
+    runProbe(
+      "subagent dispatch",
+      "claude",
+      [
+        "-p",
+        "Use the Task tool to run a subagent that prints the word READY",
+        "--allowedTools",
+        "Task"
+      ],
+      {
+        timeoutMs: 60000,
+        expect: (output) => /\bREADY\b/.test(output)
+      }
+    )
+  );
   printVerify(probes);
 }
 

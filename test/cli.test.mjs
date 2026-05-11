@@ -6,6 +6,7 @@
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -59,4 +60,21 @@ test("--help short-circuits a real subcommand (works after `diagnose`)", () => {
   const result = runCli(["diagnose", "--help"]);
   assert.equal(result.status, 0);
   assert.match(result.stdout, /Usage:/);
+});
+
+// T-403 regression: the verify command must include a real 'subagent dispatch'
+// probe — the legacy SKIP placeholder is replaced. Static source check is
+// CI-safe: spawning `verify` requires the Claude CLI which is not installed on
+// CI runners and is intentionally returned-early on by runVerify when the
+// binary probe fails.
+test("verify defines a real 'subagent dispatch' probe (not a SKIP placeholder)", () => {
+  const src = readFileSync(CLI, "utf8");
+  assert.match(src, /"subagent dispatch"/, "subagent dispatch probe label present");
+  assert.match(src, /allowedTools/, "probe configures allowedTools");
+  assert.match(src, /\\bREADY\\b|READY/, "probe matches a READY marker");
+  assert.doesNotMatch(
+    src,
+    /label:\s*"subagent dispatch",\s*\n\s*skipped:\s*true/,
+    "no SKIP placeholder remains for subagent dispatch"
+  );
 });
