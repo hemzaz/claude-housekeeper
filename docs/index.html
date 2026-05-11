@@ -322,16 +322,17 @@ block    not allowed under current evidence</pre>
               <li>Claude plugin slash command and standalone Node CLI</li>
               <li>CI matrix: Ubuntu + macOS × Node 20 + 22</li>
               <li><strong>v0.2.0-beta:</strong> snapshot-backed <code>clean --confirm --yes</code> and <code>rollback &lt;id&gt; --confirm --yes</code> for <code>plugin.cache_unreferenced</code> (outside-grace plugin cache versions). Atomic snapshot protocol, rollback dry-run plans, per-operation budget (50 files / 10 MiB), concurrency lockfile, operation manifests.</li>
+              <li><strong>v0.2.0-beta (Phase 9):</strong> interrupted-operation recovery via <code>rollback --abort &lt;id&gt;</code>, SessionStart hook surfacing non-terminal manifests, legacy pre-v0.2 manifest detection, and recovery hints on audit findings.</li>
             </ul>
           </div>
           <div>
             <strong>Roadmap</strong>
             <ul>
-              <li>Interrupted-operation recovery via <code>rollback &lt;id&gt;</code> (Phase 9)</li>
-              <li>Broaden the cleanable set beyond <code>plugin.cache_unreferenced</code> in v0.2.x</li>
+              <li>Broaden the cleanable set beyond <code>plugin.cache_unreferenced</code> in v0.2.x (registry overrides, hook fragments)</li>
               <li>More precise settings schema validation</li>
               <li>Non-interactive subagent dispatch smoketest in <code>verify</code></li>
               <li>Local learning from accepted plans and false positives</li>
+              <li><code>harden --confirm</code> for settings and hook patching (v0.3)</li>
             </ul>
           </div>
         </div>

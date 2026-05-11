@@ -287,13 +287,14 @@ Shipped:
 - CLI `--help` and `--version`
 - GitHub Pages product site and CI matrix on Ubuntu + macOS × Node 20 + 22
 - **v0.2.0-beta: snapshot-backed `clean --confirm --yes` and `rollback <id> --confirm --yes`** for `plugin.cache_unreferenced` (outside-grace plugin cache versions). Includes atomic write-temp+rename+fsync snapshot protocol, per-operation budget (50 files / 10 MiB), per-detector safe-mode limits, concurrency lockfile, rollback dry-run plans, and operation manifests under `<home>/.claude/housekeeper/operations/`.
+- **v0.2.0-beta (Phase 9):** interrupted-operation recovery. `rollback --abort <id>` cancels a `snapshot_taken`/`planned` operation; `SessionStart` hook surfaces non-terminal manifests; legacy pre-v0.2 manifests are detected and reported; audit findings include recovery hints (`rollback <id>` or `rollback --abort <id>`).
 
 Coming:
 
-- Interrupted-operation recovery via `rollback <id>` (Phase 9)
-- Broaden the cleanable set beyond `plugin.cache_unreferenced` (registry overrides, hook fragments) in v0.2.x patches
+- Broaden the cleanable set beyond `plugin.cache_unreferenced` (registry overrides, hook fragments) in v0.2.x patches — see `notes/HANDOFF-PHASE-10.md`
 - Local learning from false positives, protected paths, accepted plans, and rollback outcomes
 - More precise settings schema checks
+- `harden --confirm` (settings/hook patching) — v0.3
 
 ## Known Limitations
 
