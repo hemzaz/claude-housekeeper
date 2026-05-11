@@ -14,40 +14,66 @@ layout can change.
 
 ## First Matrix
 
-The row below records the development environment used during the
-v0.1 release prep cycle. Maintainer fills in the exact `claude
---version` value at tag time (see "How to update at release time").
+The rows below record what `v0.2.0` is actually tested against on the CI
+matrix in `.github/workflows/ci.yml` plus the maintainer's development
+target.
 
-| Dimension | First entry | State | Notes |
+| Dimension | Tested entry | State | Notes |
 | --- | --- | --- | --- |
-| Claude Code version | unknown until tag | unknown until tested | filled at release time from `claude --version`; do not promote to `supported` without recording the exact version |
-| macOS | darwin 25.x (macOS 26 series) | supported | maintainer's development target |
-| Linux | one common distro | unknown until tested | required before broad claim |
-| WSL | WSL2 | unknown until tested | path and shell behavior may differ |
-| Windows native | PowerShell and cmd | unknown until tested | path separators and file locks matter |
+| Claude Code version | N/A | not a dependency | Housekeeper runs out-of-band; the CLI is independent of Claude Code (see [mode-doctrine.md](./mode-doctrine.md)) and is designed to run even when Claude itself may be broken |
+| macOS | `macos-latest` GitHub runner | supported | tested on every PR and main push |
+| macOS (maintainer) | darwin 25.x (macOS 26 series) | supported | maintainer's development target |
+| Linux | `ubuntu-latest` GitHub runner | supported | tested on every PR and main push |
+| WSL | WSL2 | unknown until tested | path and shell behavior may differ; no CI coverage |
+| Windows native | PowerShell and cmd | unknown until tested | path separators and file locks matter; no CI coverage |
 | Shell | zsh, bash | degraded until fixtures cover quoting | shell parsing is conservative |
-| Node | 20 LTS, 22 LTS | supported | both versions on the CI matrix |
-| Plugin wrapper | Claude plugin command | degraded | depends on Claude plugin loading |
-| Standalone CLI | local Node bin / `node scripts/claude-housekeeper.mjs` | supported | recovery surface; Phase 0 + Phase 2 ship a working CLI |
+| Node | 20 LTS, 22 LTS | supported | both versions on the CI matrix (Ubuntu and macOS) |
+| Plugin wrapper | `/claude-housekeeper:housekeep` slash command | degraded | requires Claude Code plugin loader to be functional; CI runs `claude plugin validate` only when `claude` is on PATH (currently never on GitHub-hosted runners — tracked under §6 of `notes/RELEASE-READINESS-v0.2.0.md`) |
+| Standalone CLI | local Node bin / `node scripts/claude-housekeeper.mjs` | supported | recovery surface; works without Claude Code installed |
 | MCP config | structural parse only | degraded | startup requires consent |
 | Hooks | structural parse only | degraded | execution requires consent |
 
+## What Housekeeper does NOT depend on
+
+Housekeeper is explicitly designed to run when the Claude Code surface is
+broken. The CLI carries no runtime dependency on:
+
+- **The `claude` CLI being installed or on PATH.** Safe mode and diagnose
+  run structurally over the home directory without invoking Claude. See
+  [mode-doctrine.md §1](./mode-doctrine.md) for the safe-mode contract.
+- **Any specific Anthropic API version.** Housekeeper does not call
+  Anthropic APIs.
+- **Any specific MCP server being reachable.** MCP config is parsed
+  structurally; servers are not started.
+- **Any specific plugin marketplace being reachable.** Plugin registry
+  files are read from disk; no network calls.
+- **Any specific Claude Code version.** Loader semantics are inspected
+  structurally; if a settings schema changes, unknown keys degrade to
+  weakened evidence per [Feature Detection Rules](#feature-detection-rules)
+  below — they do not crash the scan.
+
+The plugin slash command path (`/claude-housekeeper:housekeep`) is the
+single surface that requires the Claude Code plugin loader to be
+functional. The standalone CLI surface remains usable when that loader is
+broken — that is the entire point of mode doctrine.
+
 ## How to update at release time
 
-Before tagging `v0.1.0`, the maintainer captures the exact environment
-used to generate the release goldens and replaces the placeholder
-entries above:
+Before tagging a release, confirm the CI matrix and maintainer environment
+rows still match reality:
 
-- `claude --version` — fill the Claude Code version row with the exact
-  value (no `unknown until tag` left); promote the row to `supported`
-  once the goldens are recaptured under that version.
 - `node --version` — confirm both Node 20 and Node 22 still pass CI; if
   CI moves off Node 20, demote that entry.
 - `uname -a` — record the exact macOS kernel and architecture used for
   the maintainer's row.
+- `.github/workflows/ci.yml` matrix — confirm `ubuntu-latest` and
+  `macos-latest` are still on the matrix; if either is removed, demote
+  the corresponding OS row.
 - Linux, WSL, and Windows native rows remain `unknown until tested`
   until a real fixture run on each platform has been completed and
-  recorded; do not relabel them based on inference.
+  recorded; do not relabel them based on inference. The `ubuntu-latest`
+  CI row is supported but does NOT generalize to arbitrary Linux distros
+  without per-distro fixtures.
 
 ## Feature Detection Rules
 
