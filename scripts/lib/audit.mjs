@@ -788,11 +788,18 @@ function detectInterruptedOperation(context) {
     const file = path.join(opsDir, name);
     const parsed = readJson(file);
     if (!parsed.ok || !parsed.value) continue;
-    if (parsed.value.status === "verified") continue;
-    manifests.push({ file, status: parsed.value.status || "unknown" });
+    if (["verified", "rolled_back", "aborted"].includes(parsed.value.status)) continue;
+    manifests.push({
+      file,
+      opId: path.basename(file, ".json"),
+      status: parsed.value.status || "unknown"
+    });
   }
   if (manifests.length === 0) return null;
   const first = manifests[0];
+  const recoveryStep = first.status === "snapshot_taken"
+    ? `rollback ${first.opId} --abort`
+    : `rollback ${first.opId}`;
   return {
     id: "housekeeper.interrupted_operation",
     class: "integrity",
@@ -809,14 +816,14 @@ function detectInterruptedOperation(context) {
     }),
     evidence: {
       structural: [
-        `operation id ${path.basename(first.file, ".json")} exists`,
-        "manifest lacks completed verification record"
+        `operation id ${first.opId} exists`,
+        `manifest status is ${first.status}`
       ],
       reversibility: ["manifest-present-but-incomplete"]
     },
     missingKeys: ["recovery decision for interrupted operation"],
-    summary: "Housekeeper operation manifest is incomplete",
-    nextAllowedStep: "inspect operation record and choose recover, archive, or discard",
+    summary: `Housekeeper operation ${first.opId} is interrupted with status ${first.status}`,
+    nextAllowedStep: recoveryStep,
     blockedActions: [
       "start new mutation operation",
       "overwrite operation manifest",

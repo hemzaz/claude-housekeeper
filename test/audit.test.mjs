@@ -197,6 +197,36 @@ test("verified operation manifests do not emit a finding", () => {
   assert.equal(interrupted, undefined);
 });
 
+test("interrupted applied operation points at rollback command", () => {
+  const home = fixtureHome();
+  const opsDir = path.join(home, "housekeeper/operations");
+  mkdirSync(opsDir, { recursive: true });
+  const opId = "op_20260511143022_a1b2c3d4";
+  writeJson(path.join(opsDir, `${opId}.json`), { schemaVersion: "0.2", status: "applied" });
+
+  const report = assembleReport(home);
+  const interrupted = report.findings.find((f) => f.id === "housekeeper.interrupted_operation");
+  assert.ok(interrupted, "interrupted finding must exist");
+  assert.equal(interrupted.nextAllowedStep, `rollback ${opId}`);
+  assert.match(interrupted.summary, new RegExp(opId));
+  assert.match(interrupted.summary, /applied/);
+});
+
+test("interrupted snapshot_taken operation points at rollback abort command", () => {
+  const home = fixtureHome();
+  const opsDir = path.join(home, "housekeeper/operations");
+  mkdirSync(opsDir, { recursive: true });
+  const opId = "op_20260511143022_a1b2c3d4";
+  writeJson(path.join(opsDir, `${opId}.json`), { schemaVersion: "0.2", status: "snapshot_taken" });
+
+  const report = assembleReport(home);
+  const interrupted = report.findings.find((f) => f.id === "housekeeper.interrupted_operation");
+  assert.ok(interrupted, "interrupted finding must exist");
+  assert.equal(interrupted.nextAllowedStep, `rollback ${opId} --abort`);
+  assert.match(interrupted.summary, new RegExp(opId));
+  assert.match(interrupted.summary, /snapshot_taken/);
+});
+
 // ---------- shadow / divergence / identical (legacy case migrated) ----------
 
 test("local command shadows emit exactly one identical or diverged finding per path", () => {
