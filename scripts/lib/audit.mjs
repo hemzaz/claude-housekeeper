@@ -664,7 +664,9 @@ function localCommandIdentityFindings(context, identical) {
       summary: identical
         ? `${command.name} is byte-identical to plugin version`
         : `${command.name} has diverged from plugin version`,
-      nextAllowedStep: "review-required",
+      nextAllowedStep: identical
+        ? "show source, target, and precedence; await user intent"
+        : "show both versions and let the user decide",
       blockedActions: ["overwrite local edits"]
     });
   }
