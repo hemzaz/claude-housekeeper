@@ -21,14 +21,24 @@ mechanics are implemented.
 ## Command Surface
 
 ```bash
-claude-housekeeper                 # alias for diagnose
-claude-housekeeper diagnose        # read-only report
-claude-housekeeper plan            # read-only detailed findings
-claude-housekeeper verify          # Claude CLI smoketest probes
-claude-housekeeper clean --confirm # planned; currently refuses mutation
-claude-housekeeper harden          # planned; currently refuses mutation
-claude-housekeeper rollback <id>   # planned; currently refuses mutation
+claude-housekeeper                                 # alias for diagnose
+claude-housekeeper diagnose                        # read-only report
+claude-housekeeper plan                            # read-only detailed findings
+claude-housekeeper verify                          # Claude CLI smoketest probes
+claude-housekeeper clean                           # dry-run; refuses mutation
+claude-housekeeper clean --confirm                 # refuses without --yes
+claude-housekeeper clean --confirm --yes \
+    --target=plugin.cache_unreferenced \
+    --path=<absolute path>                         # mutates a single plugin cache
+                                                   # version (v0.2.0-alpha)
+claude-housekeeper harden                          # planned; refuses mutation
+claude-housekeeper rollback <id>                   # planned for v0.2; refuses
 ```
+
+Only `plugin.cache_unreferenced` (plugin cache versions OUTSIDE the 7-day
+grace window) is cleanable in v0.2.0-alpha. Everything else routes to
+`refused[]` with a structured reason — see `docs/design/clean-design.md` for
+the full taxonomy.
 
 Scopes:
 
@@ -251,6 +261,8 @@ registry, and Housekeeper's own operation manifest. Detector ids:
 - `home.not_found`
 - `home.scan_budget_hit`
 - `home.clean`
+- `plugin.cache_referenced_by_hook` (v0.2.0-alpha)
+- `housekeeper.stale_lock` (v0.2.0-alpha)
 
 Hygiene and state findings (large logs, zombie state, corrupt backups,
 drift directories, file-history age) are deferred to v0.2 alongside the
@@ -269,14 +281,15 @@ Shipped:
 - Optional SessionStart prevention hook (see above)
 - CLI `--help` and `--version`
 - GitHub Pages product site and CI matrix on Ubuntu + macOS × Node 20 + 22
+- **v0.2.0-alpha: snapshot-backed `clean --confirm --yes`** for `plugin.cache_unreferenced` (outside-grace plugin cache versions). Includes atomic write-temp+rename+fsync snapshot protocol, per-operation budget (50 files / 10 MiB), per-detector safe-mode limits, concurrency lockfile, and operation manifests under `<home>/.claude/housekeeper/operations/`.
 
 Coming:
 
-- Snapshot-backed `clean` with one-line rollback output
-- `rollback <id>` restore flow
+- `rollback <id>` restore flow (Phase 8 — manifests exist; CLI not yet wired)
+- Interrupted-operation recovery via `rollback <id>` (Phase 9)
+- Broaden the cleanable set beyond `plugin.cache_unreferenced` (registry overrides, hook fragments) in v0.2.x patches
 - Local learning from false positives, protected paths, accepted plans, and rollback outcomes
 - More precise settings schema checks
-- A non-interactive subagent dispatch smoketest
 
 ## Known Limitations
 
