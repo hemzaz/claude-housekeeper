@@ -179,7 +179,7 @@ function selectedDetectors(scope) {
 function buildFinding(raw, { home, mode, policyMatchesFor }) {
   const baseSurface = raw.surface
     || classifySurface(raw.targetPath || "", { ...(raw.surfaceHints || {}), home });
-  const surface = applySafeModeLimits(baseSurface, mode);
+  const surface = applySafeModeLimits(baseSurface, mode, raw.id);
   const evidence = makeEvidenceSet({ ...(raw.evidence || {}), missing: raw.missingKeys || [] });
   const matches = raw.targetPath ? policyMatchesFor(raw.targetPath) : [];
   const stance = decideStance({
@@ -226,14 +226,37 @@ function buildFinding(raw, { home, mode, policyMatchesFor }) {
   return finding;
 }
 
-// Apply mode-driven surface.limits per docs/schemas.md and the fixture goldens.
-// In safe mode, every surface carries `safe-mode-no-loader-key` so consumers
-// know loader-side evidence (e.g. live /hooks output) was not collected.
-function applySafeModeLimits(surface, mode) {
+// Per-detector safe-mode limit tokens, sourced from the fixture goldens in
+// fixtures/synthetic-homes/*/report.json. Each token names exactly the
+// boundary that safe mode refuses to cross for that detector (loader load,
+// active-session check, shell parse, MCP start, etc.). Detectors whose
+// evidence is entirely in-scope (e.g. housekeeper.* manifest reads, home
+// existence checks, settings.invalid_json structural parse) get no token.
+const SAFE_MODE_LIMIT_BY_ID = {
+  "settings.hook_path_dangling": "safe-mode-no-loader-key",
+  "settings.hook_command_shell_ambiguous": "safe-mode-no-shell-parse",
+  "settings.mcp_command_missing": "safe-mode-no-mcp-start",
+  "plugin.expected_orphan": "safe-mode-no-active-session-key",
+  "plugin.cache_unreferenced": "safe-mode-no-active-session-key",
+  "plugin.duplicate_registration": "safe-mode-no-loader-key",
+  "plugin.cache_size": "safe-mode-no-loader-key",
+  "registry.local_skill_shadow": "safe-mode-no-loader-key",
+  "registry.local_command_identical": "safe-mode-no-loader-key",
+  "registry.local_command_diverged": "safe-mode-no-loader-key",
+  "registry.broken_frontmatter": "safe-mode-no-loader-key",
+  "home.scan_budget_hit": "safe-mode-scan-budget"
+};
+
+// Apply mode-driven surface.limits per docs/schemas.md and the fixture
+// goldens. In safe mode, append the detector-specific limit token (if any)
+// so consumers know which boundary was not crossed.
+function applySafeModeLimits(surface, mode, id) {
   if (mode !== "safe") return surface;
+  const limit = SAFE_MODE_LIMIT_BY_ID[id];
+  if (!limit) return surface;
   const existing = Array.isArray(surface?.limits) ? surface.limits : [];
-  if (existing.includes("safe-mode-no-loader-key")) return surface;
-  return { ...surface, limits: [...existing, "safe-mode-no-loader-key"] };
+  if (existing.includes(limit)) return surface;
+  return { ...surface, limits: [...existing, limit] };
 }
 
 function defaultBlockedActions(id, stance) {

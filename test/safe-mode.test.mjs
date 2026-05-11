@@ -29,35 +29,33 @@ test("safe mode echoes mode: 'safe' in the report", () => {
   assert.equal(report.mode, "safe");
 });
 
-test("safe mode tags every finding's surface.limits with 'safe-mode-no-loader-key'", () => {
-  // Generate a finding by creating an unreferenced plugin-cache version dir
-  // (well outside any grace window); the cache_unreferenced detector emits a
-  // finding whose surface should carry the safe-mode limit when mode === "safe".
+test("safe mode tags each finding with the detector-specific safe-mode limit token", () => {
+  // Generate two findings with different expected limit tokens:
+  // - plugin.cache_unreferenced -> safe-mode-no-active-session-key
+  // - plugin.cache_size         -> safe-mode-no-loader-key
   const home = makeFixtureHome();
   const orphan = path.join(home, "plugins/cache/m/p/9.9.9");
   mkdirSync(orphan, { recursive: true });
-  // Set its mtime well in the past so it falls outside the grace window and
-  // the cache_unreferenced detector fires.
   const oldTime = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
   utimesSync(orphan, oldTime, oldTime);
   writeFileSync(path.join(home, "plugins/installed_plugins.json"), "{}");
 
   const safeReport = assembleReport(home, { mode: "safe" });
-  assert.ok(safeReport.findings.length > 0, "safe report has at least one finding");
-  for (const f of safeReport.findings) {
-    assert.ok(
-      Array.isArray(f.surface.limits) && f.surface.limits.includes("safe-mode-no-loader-key"),
-      `${f.id} missing safe-mode-no-loader-key limit; got ${JSON.stringify(f.surface.limits)}`
-    );
-  }
+  const cacheUnreferenced = safeReport.findings.find((f) => f.id === "plugin.cache_unreferenced");
+  assert.ok(cacheUnreferenced, "safe report includes plugin.cache_unreferenced");
+  assert.deepEqual(cacheUnreferenced.surface.limits, ["safe-mode-no-active-session-key"]);
 
+  const cacheSize = safeReport.findings.find((f) => f.id === "plugin.cache_size");
+  assert.ok(cacheSize, "safe report includes plugin.cache_size");
+  assert.deepEqual(cacheSize.surface.limits, ["safe-mode-no-loader-key"]);
+
+  // Diagnose mode never carries any safe-mode-* token.
   const diagnoseReport = assembleReport(home, { mode: "diagnose" });
-  assert.ok(diagnoseReport.findings.length > 0, "diagnose report has at least one finding");
   for (const f of diagnoseReport.findings) {
-    assert.ok(
-      !Array.isArray(f.surface.limits) || !f.surface.limits.includes("safe-mode-no-loader-key"),
-      `${f.id} carries safe-mode limit outside safe mode; got ${JSON.stringify(f.surface.limits)}`
-    );
+    const tokens = Array.isArray(f.surface.limits) ? f.surface.limits : [];
+    for (const t of tokens) {
+      assert.ok(!t.startsWith("safe-mode-"), `${f.id} carries safe-mode token outside safe mode: ${t}`);
+    }
   }
 });
 
