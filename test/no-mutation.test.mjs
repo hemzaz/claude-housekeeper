@@ -7,6 +7,10 @@ import test from "node:test";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const scriptsDir = path.resolve(__dirname, "..", "scripts");
 
+// snapshot.mjs is the designated v0.2 mutation surface (T-600).
+// All other scripts/ files must remain read-only.
+const MUTATION_ALLOWLIST = new Set(["lib/snapshot.mjs"]);
+
 const FORBIDDEN = [
   "unlinkSync",
   "rmSync",
@@ -25,10 +29,12 @@ const FORBIDDEN = [
 test("scripts/ contains no filesystem mutation primitives", () => {
   const offenders = [];
   for (const file of walkMjs(scriptsDir)) {
+    const rel = path.relative(scriptsDir, file);
+    if (MUTATION_ALLOWLIST.has(rel)) continue;
     const text = readFileSync(file, "utf8");
     for (const token of FORBIDDEN) {
       if (text.includes(token)) {
-        offenders.push(`${path.relative(scriptsDir, file)}: ${token}`);
+        offenders.push(`${rel}: ${token}`);
       }
     }
   }
