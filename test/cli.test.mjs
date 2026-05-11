@@ -6,7 +6,8 @@
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, utimesSync, readFileSync, existsSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -112,9 +113,98 @@ test("clean --confirm (no --yes) exits 2 with Refusing mutation message", () => 
   assert.match(result.stderr, /--yes/);
 });
 
-test("clean --confirm --yes exits 0 with T-704 placeholder", () => {
-  const CLEAN_HOME = path.join(REPO_ROOT, "fixtures", "synthetic-homes", "clean-home", "home");
-  const result = runCli(["clean", "--confirm", "--yes", `--home=${CLEAN_HOME}`]);
+// ── T-704 clean handler wiring tests ─────────────────────────────────────────
+
+/**
+ * Build a minimal synthetic Claude home with a plugin.cache_unreferenced fixture.
+ * Returns { home, cacheDir } where home is the .claude directory root.
+ */
+function makeSyntheticClaudeHome() {
+  const parent = mkdtempSync(path.join(tmpdir(), "ck-cli-test-"));
+  const home = path.join(parent, ".claude");
+  mkdirSync(home, { recursive: true });
+  writeFileSync(path.join(home, "settings.json"), "{}\n");
+  const cacheDir = path.join(home, "plugins", "cache", "test-market", "test-tool", "0.9.0");
+  mkdirSync(cacheDir, { recursive: true });
+  writeFileSync(path.join(cacheDir, "plugin.json"), JSON.stringify({ name: "test-tool", version: "0.9.0" }) + "\n");
+  writeFileSync(path.join(cacheDir, "data.txt"), "cache data\n");
+  // Force mtime 30 days into the past so audit fires plugin.cache_unreferenced.
+  const longAgo = (Date.now() - 30 * 24 * 60 * 60 * 1000) / 1000;
+  utimesSync(cacheDir, longAgo, longAgo);
+  return { home, cacheDir };
+}
+
+test("clean (no flags) prints dry-run plan and exits 0", () => {
+  // No home needed: flag gate fires before existsSync check.
+  const result = runCli(["clean"]);
   assert.equal(result.status, 0, `expected exit 0, got ${result.status}: ${result.stderr}`);
-  assert.match(result.stdout, /T-704/);
+  assert.match(result.stdout, /DRY-RUN/);
+  assert.match(result.stdout, /--confirm/);
+});
+
+test("clean --confirm without --target exits 2 with missing-flag error", () => {
+  const { home } = makeSyntheticClaudeHome();
+  const result = runCli(["clean", "--confirm", "--yes", `--home=${home}`]);
+  assert.equal(result.status, 2, `expected exit 2, got ${result.status}`);
+  assert.match(result.stderr, /Missing --target or --path/);
+  assert.match(result.stderr, /claude-housekeeper plan/);
+});
+
+test("clean --confirm --target=x --path=y without --yes exits 2 with Refusing mutation", () => {
+  const { home, cacheDir } = makeSyntheticClaudeHome();
+  const result = runCli([
+    "clean", "--confirm",
+    "--target=plugin.cache_unreferenced",
+    `--path=${cacheDir}`,
+    `--home=${home}`
+  ]);
+  assert.equal(result.status, 2, `expected exit 2, got ${result.status}`);
+  assert.match(result.stderr, /Refusing mutation/);
+  assert.match(result.stderr, /--yes/);
+});
+
+test("clean --confirm --yes --target=plugin.expected_orphan exits 2 with no-mutation-mapping-in-v0.2", () => {
+  // Build a within-grace cache so audit fires plugin.expected_orphan (not cache_unreferenced).
+  const parent = mkdtempSync(path.join(tmpdir(), "ck-cli-orphan-"));
+  const home = path.join(parent, ".claude");
+  mkdirSync(home, { recursive: true });
+  writeFileSync(path.join(home, "settings.json"), "{}\n");
+  const cacheDir = path.join(home, "plugins", "cache", "test-market", "fresh-tool", "1.0.0");
+  mkdirSync(cacheDir, { recursive: true });
+  writeFileSync(path.join(cacheDir, "plugin.json"), JSON.stringify({ name: "fresh-tool", version: "1.0.0" }) + "\n");
+  // No utimes — stays fresh, within 7-day grace → fires plugin.expected_orphan.
+
+  const result = runCli([
+    "clean", "--confirm", "--yes",
+    "--target=plugin.expected_orphan",
+    `--path=${cacheDir}`,
+    `--home=${home}`
+  ]);
+  assert.equal(result.status, 2, `expected exit 2, got ${result.status}: ${result.stderr}`);
+  assert.match(result.stdout, /no-mutation-mapping-in-v0\.2/);
+});
+
+test("clean --confirm --yes --target=plugin.cache_unreferenced happy path: exits 0, DONE and RELOAD HINT, dir gone", () => {
+  const { home, cacheDir } = makeSyntheticClaudeHome();
+  const result = runCli([
+    "clean", "--confirm", "--yes",
+    "--target=plugin.cache_unreferenced",
+    `--path=${cacheDir}`,
+    `--home=${home}`
+  ]);
+  assert.equal(result.status, 0, `expected exit 0, got ${result.status}:\nstdout: ${result.stdout}\nstderr: ${result.stderr}`);
+  assert.match(result.stdout, /DONE\. Operation verified\./);
+  assert.match(result.stdout, /RELOAD HINT/);
+  assert.match(result.stdout, /\/reload-plugins/);
+  assert.match(result.stdout, /To roll back: claude-housekeeper rollback/);
+  // The target directory must be gone after clean.
+  assert.ok(!existsSync(cacheDir), `cache directory should be deleted: ${cacheDir}`);
+});
+
+test("--help shows --target and --path flags under clean", () => {
+  const result = runCli(["--help"]);
+  assert.equal(result.status, 0);
+  assert.match(result.stdout, /--target=/);
+  assert.match(result.stdout, /--path=/);
+  assert.match(result.stdout, /REQUIRED when --confirm is set/);
 });
