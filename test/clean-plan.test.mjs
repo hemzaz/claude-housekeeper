@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, utimesSync, symlinkSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, utimesSync, symlinkSync, existsSync as existsSyncImport } from "node:fs";
 import { mkdir, writeFile, access } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -67,13 +67,17 @@ test("MUTATION_KINDS exports the four documented kinds", () => {
 
 // ── MUTATION_REGISTRY ─────────────────────────────────────────────────────────
 
-// Test 13: dir-rmtree factory returns an apply; other kinds throw NotImplementedError.
-test("MUTATION_REGISTRY: dir-rmtree factory returns an apply; other kinds throw NotImplementedError", () => {
-  const factory = MUTATION_REGISTRY["dir-rmtree"];
-  const op = factory({ dirPath: "/tmp/fake" });
-  assert.equal(typeof op.apply, "function");
+// Test 13: dir-rmtree + file-unlink factories return apply callables; the
+// remaining two kinds still throw NotImplementedError in v0.2.x.
+test("MUTATION_REGISTRY: implemented kinds return apply; unimplemented kinds throw NotImplementedError", () => {
+  for (const kind of ["dir-rmtree", "file-unlink"]) {
+    const factory = MUTATION_REGISTRY[kind];
+    const op = factory(kind === "dir-rmtree" ? { dirPath: "/tmp/fake" } : { path: "/tmp/fake" });
+    assert.equal(typeof op.apply, "function");
+    assert.ok(op.args);
+  }
 
-  for (const kind of ["file-unlink", "file-replace", "json-fragment-edit"]) {
+  for (const kind of ["file-replace", "json-fragment-edit"]) {
     assert.throws(
       () => MUTATION_REGISTRY[kind]({}),
       (err) => {
@@ -84,6 +88,18 @@ test("MUTATION_REGISTRY: dir-rmtree factory returns an apply; other kinds throw 
       }
     );
   }
+});
+
+// Test 13b: MUTATION_REGISTRY["file-unlink"]({ path }).apply() removes the file.
+test("MUTATION_REGISTRY file-unlink: apply() removes the file at args.path", async () => {
+  const home = mkdtempSync(path.join(tmpdir(), "ck-fu-"));
+  const target = path.join(home, "doomed.txt");
+  writeFileSync(target, "doomed\n");
+  assert.ok(existsSyncImport(target), "precondition: file exists");
+  const factory = MUTATION_REGISTRY["file-unlink"];
+  const op = factory({ path: target });
+  await op.apply();
+  assert.ok(!existsSyncImport(target), "file should be unlinked");
 });
 
 // ── composeCleanPlan — happy path ─────────────────────────────────────────────
@@ -370,4 +386,95 @@ test("executeCleanPlan releases lockfile after inner failure", async () => {
   const lockPath = path.join(home, "housekeeper", "lock");
   const lockGone = !(await fileExists(lockPath));
   assert.ok(lockGone, "lockfile must be released even after failure");
+});
+
+// ── Phase 10 helpers: file-unlink cleanable detectors ────────────────────────
+
+function addStaleLock(home, { stalenessIso } = {}) {
+  const lockDir = path.join(home, "housekeeper");
+  mkdirSync(lockDir, { recursive: true });
+  const lockPath = path.join(lockDir, "lock");
+  const staleAt = stalenessIso || new Date(Date.now() - 60 * 60 * 1000).toISOString();
+  writeFileSync(
+    lockPath,
+    JSON.stringify({ pid: 99999, hostname: "test", opId: "op_stale", startedAt: staleAt, stalenessAt: staleAt }) + "\n"
+  );
+  return lockPath;
+}
+
+function addLocalCommandIdentical(home, { market = "test-market", plugin = "test-plug", version = "1.0.0", name = "shared-cmd", body = "# shared command\n" } = {}) {
+  const localDir = path.join(home, "commands");
+  mkdirSync(localDir, { recursive: true });
+  const localPath = path.join(localDir, `${name}.md`);
+  writeFileSync(localPath, body);
+  const pluginCmdDir = path.join(home, "plugins", "cache", market, plugin, version, "commands");
+  mkdirSync(pluginCmdDir, { recursive: true });
+  writeFileSync(path.join(pluginCmdDir, `${name}.md`), body);
+  writeFileSync(
+    path.join(home, "plugins", "cache", market, plugin, version, "plugin.json"),
+    JSON.stringify({ name: plugin, version }) + "\n"
+  );
+  // Register the plugin so collectPluginResources walks its commands dir.
+  // flattenPluginEntries defaults installPath to <home>/plugins/cache/<m>/<p>/<v>.
+  const registryPath = path.join(home, "plugins", "installed_plugins.json");
+  const registry = { plugins: [{ marketplace: market, name: plugin, version }] };
+  writeFileSync(registryPath, JSON.stringify(registry, null, 2) + "\n");
+  return localPath;
+}
+
+// ── Phase 10 tests ───────────────────────────────────────────────────────────
+
+test("Phase 10 compose: housekeeper.stale_lock → 1 file-unlink operation", async () => {
+  const home = makeSyntheticHome();
+  const lockPath = addStaleLock(home);
+  const plan = await composeCleanPlan(home, {
+    target: "housekeeper.stale_lock",
+    path: lockPath
+  });
+  assert.equal(plan.refused.length, 0, `unexpected refusals: ${JSON.stringify(plan.refused)}`);
+  assert.equal(plan.operations.length, 1);
+  assert.equal(plan.operations[0].mutationKind, "file-unlink");
+  assert.equal(plan.operations[0].mutationOp.args.path, lockPath);
+});
+
+test("Phase 10 compose: registry.local_command_identical → 1 file-unlink operation", async () => {
+  const home = makeSyntheticHome();
+  const localPath = addLocalCommandIdentical(home);
+  const plan = await composeCleanPlan(home, {
+    target: "registry.local_command_identical",
+    path: localPath
+  });
+  assert.equal(plan.refused.length, 0, `unexpected refusals: ${JSON.stringify(plan.refused)}`);
+  assert.equal(plan.operations.length, 1);
+  assert.equal(plan.operations[0].mutationKind, "file-unlink");
+  assert.equal(plan.operations[0].mutationOp.args.path, localPath);
+});
+
+test("Phase 10 compose: registry.local_command_identical under doNotTouch → protected-path", async () => {
+  const home = makeSyntheticHome();
+  const localPath = addLocalCommandIdentical(home, { name: "protected-cmd" });
+  const cfgDir = path.join(home, "housekeeper");
+  mkdirSync(cfgDir, { recursive: true });
+  const config = { doNotTouch: [{ path: "commands/protected-cmd.md", reason: "hand-maintained" }] };
+  writeFileSync(path.join(cfgDir, "config.json"), JSON.stringify(config) + "\n");
+  const plan = await composeCleanPlan(home, {
+    target: "registry.local_command_identical",
+    path: localPath
+  });
+  assert.equal(plan.operations.length, 0);
+  assert.equal(plan.refused.length, 1);
+  assert.equal(plan.refused[0].reason, "protected-path");
+});
+
+test("Phase 10 execute: registry.local_command_identical → file deleted, manifest verified", async () => {
+  const home = makeSyntheticHome();
+  const localPath = addLocalCommandIdentical(home);
+  const plan = await composeCleanPlan(home, {
+    target: "registry.local_command_identical",
+    path: localPath
+  });
+  const validated = await validateCleanPlan(plan, home);
+  const result = await executeCleanPlan(validated, home);
+  assert.equal(result.status, "verified");
+  assert.equal(existsSyncImport(localPath), false, "local command file should be deleted");
 });
