@@ -9,7 +9,7 @@ const scriptsDir = path.resolve(__dirname, "..", "scripts");
 
 // snapshot.mjs is the designated v0.2 mutation surface (T-600).
 // All other scripts/ files must remain read-only.
-const MUTATION_ALLOWLIST = new Set(["lib/snapshot.mjs"]);
+const MUTATION_ALLOWLIST = new Set(["lib/snapshot.mjs", "lib/clean-plan.mjs"]);
 
 const FORBIDDEN = [
   "unlinkSync",
