@@ -235,7 +235,7 @@ test("json renderer: stripped Finding has stable fields, no internal annotations
   const finding = makePrepareFinding();
   finding.why = "internal stance annotation";
   finding.userDecisionNeeded = true;
-  finding.targetPath = "/internal/path";
+  finding.targetPath = "/some/path/to/file.md";
   const report = emptyReport({
     findings: [finding],
     primary: finding.id,
@@ -243,13 +243,17 @@ test("json renderer: stripped Finding has stable fields, no internal annotations
   });
   const json = renderJsonReport(report);
   const f = json.findings[0];
-  for (const stable of ["id", "class", "claimLevel", "stance", "summary", "surface", "evidence", "blockedActions"]) {
+  for (const stable of [
+    "id", "class", "claimLevel", "stance", "summary",
+    "targetPath", "surface", "evidence", "blockedActions"
+  ]) {
     assert.ok(Object.prototype.hasOwnProperty.call(f, stable), `missing ${stable}`);
   }
-  // Internal fields stripped to keep the public schema stable.
+  // targetPath is a stable field (per docs/schema-stability.md) and forwards as-is.
+  assert.equal(f.targetPath, "/some/path/to/file.md");
+  // Internal fields stay stripped to keep the public schema stable.
   assert.equal(f.why, undefined);
   assert.equal(f.userDecisionNeeded, undefined);
-  assert.equal(f.targetPath, undefined);
 });
 
 test("json renderer: proposedProbe forwarded when present (T-210)", () => {

@@ -214,6 +214,36 @@ test("redactReport: home prefix becomes ~ under --redact", () => {
   assert.equal(json.home, "~");
 });
 
+// Regression: a finding's deep targetPath survives --redact as a `~`-rooted
+// path, rather than being false-positive mangled to `<redacted>` by the
+// residual-token rule. The home-collapsed path is the action-bearing field
+// for consumers; mangling it makes the redacted report unactionable.
+test("redactReport: deep targetPath survives --redact as a ~-rooted path", () => {
+  const finding = makeFinding({
+    id: "plugin.expected_orphan",
+    stance: "watch",
+    summary: "old plugin cache version appears to be an expected orphan",
+    surface: makeSurfaceClassification({
+      surfaceClass: "claude-app-data",
+      ownerClass: "claude-managed",
+      sensitivityClass: "private-path",
+      scopeClass: "in-scope"
+    }),
+    evidence: makeEvidenceSet({ structural: ["installed registry parsed"] })
+  });
+  finding.targetPath = "/Users/u/.claude/plugins/cache/agentsys/consult/1.0.0";
+
+  const report = makeReport({
+    schemaVersion: "0.1",
+    home: "/Users/u/.claude",
+    findings: [finding],
+    primary: finding.id,
+    stanceSummary: { watch: 1 }
+  });
+  const json = renderJsonReport(report, { redact: true, home: "/Users/u/.claude" });
+  assert.equal(json.findings[0].targetPath, "~/plugins/cache/agentsys/consult/1.0.0");
+});
+
 // Positive: the doc's command-string example transforms cleanly.
 test("redactReport: ANTHROPIC_API_KEY=sk-... in a hook command becomes <redacted>", () => {
   const finding = makeFinding({

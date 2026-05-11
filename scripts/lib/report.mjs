@@ -291,6 +291,7 @@ function stripFindingForJson(finding) {
     claimLevel: finding.claimLevel,
     stance: finding.stance,
     summary: finding.summary,
+    targetPath: finding.targetPath || "",
     surface: finding.surface,
     evidence: finding.evidence,
     nextAllowedStep: finding.nextAllowedStep,
