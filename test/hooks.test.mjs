@@ -47,6 +47,9 @@ test("SessionStart hook: warns on a home with a block finding", () => {
   assert.match(result.stderr, /\[housekeeper\]/);
   assert.match(result.stderr, /1 block/);
   assert.match(result.stderr, /Run 'claude-housekeeper plan'/);
+  assert.match(result.stderr, /interrupted operation op_001/);
+  assert.match(result.stderr, /status=planned/);
+  assert.match(result.stderr, /age=\d+d/);
 });
 
 test("SessionStart hook: HOUSEKEEPER_SESSION_HOOK=off silences a block-state home", () => {
