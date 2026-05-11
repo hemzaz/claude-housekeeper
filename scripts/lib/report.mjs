@@ -143,6 +143,7 @@ export function renderPlanReport(report, options = {}) {
   for (const finding of view.findings) {
     lines.push(`${finding.id} — stance: ${finding.stance}`);
     if (finding.summary) lines.push(`  finding: ${finding.summary}`);
+    if (finding.targetPath) lines.push(`  path: ${finding.targetPath}`);
     lines.push(`  next step: ${finding.nextAllowedStep || STANCE_NEXT_STEP[finding.stance] || "none"}`);
     if (finding.blockedActions && finding.blockedActions.length > 0) {
       lines.push(`  blocked actions: ${finding.blockedActions.join(", ")}`);

@@ -320,6 +320,30 @@ test("plan renderer: empty report says 'No findings.'", () => {
   assert.match(out, /No findings\./);
 });
 
+test("plan renderer: finding targetPath is emitted on its own 'path:' line", () => {
+  const finding = makePrepareFinding();
+  finding.targetPath = "/Users/u/.claude/plugins/cache/m/p/1.2.3";
+  const report = emptyReport({
+    findings: [finding],
+    primary: finding.id,
+    stanceSummary: { prepare: 1 }
+  });
+  const out = renderPlanReport(report);
+  assert.match(out, /^ {2}path: \/Users\/u\/\.claude\/plugins\/cache\/m\/p\/1\.2\.3$/m);
+});
+
+test("plan renderer: omits path line when targetPath is absent", () => {
+  const finding = makePrepareFinding();
+  delete finding.targetPath;
+  const report = emptyReport({
+    findings: [finding],
+    primary: finding.id,
+    stanceSummary: { prepare: 1 }
+  });
+  const out = renderPlanReport(report);
+  assert.doesNotMatch(out, /^ {2}path: /m);
+});
+
 // ---------- T-X12: per-fixture mode round-trip ----------
 
 test("renderer pins mode through both human and JSON output", () => {

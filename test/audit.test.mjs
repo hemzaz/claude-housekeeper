@@ -170,7 +170,7 @@ test("verified operation manifests do not emit a finding", () => {
 
 // ---------- shadow / divergence / identical (legacy case migrated) ----------
 
-test("local command shadows split into identical and diverged findings", () => {
+test("local command shadows emit exactly one identical or diverged finding per path", () => {
   const home = fixtureHome();
   const pluginRoot = path.join(home, "plugins/cache/market/tool/1.0.0");
   mkdirSync(path.join(pluginRoot, "commands"), { recursive: true });
@@ -186,9 +186,12 @@ test("local command shadows split into identical and diverged findings", () => {
   const ids = report.findings.map((f) => f.id);
   const counts = (id) => ids.filter((i) => i === id).length;
 
-  assert.equal(counts("registry.local_command_shadow"), 2);
+  assert.equal(counts("registry.local_command_shadow"), 0);
   assert.equal(counts("registry.local_command_identical"), 1);
   assert.equal(counts("registry.local_command_diverged"), 1);
+
+  const identical = report.findings.find((f) => f.id === "registry.local_command_identical");
+  assert.equal(identical.stance, "review");
 });
 
 // ---------- T-X08: repair stance unreachable in v0.1 ----------

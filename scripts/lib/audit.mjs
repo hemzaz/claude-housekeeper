@@ -51,7 +51,6 @@ const SCOPE_TO_DETECTORS = {
     "settings.hook_command_shell_ambiguous"
   ],
   registry: [
-    "registry.local_command_shadow",
     "registry.local_skill_shadow",
     "registry.local_command_identical",
     "registry.local_command_diverged",
@@ -114,7 +113,6 @@ export function assembleReport(home, options = {}) {
   pushAll(detectorOutputs, selected, detectPluginDuplicateRegistration(context));
   push(detectorOutputs, selected, detectPluginCacheSize(context));
 
-  pushAll(detectorOutputs, selected, detectLocalCommandShadow(context));
   pushAll(detectorOutputs, selected, detectLocalSkillShadow(context));
   pushAll(detectorOutputs, selected, detectLocalCommandIdentical(context));
   pushAll(detectorOutputs, selected, detectLocalCommandDiverged(context));
@@ -575,30 +573,6 @@ function detectPluginCacheSize(context) {
   };
 }
 
-function detectLocalCommandShadow(context) {
-  const localDir = path.join(context.home, "commands");
-  const out = [];
-  for (const command of collectCommands(localDir)) {
-    if (!context.pluginResources.commands.has(command.name)) continue;
-    out.push({
-      id: "registry.local_command_shadow",
-      class: "shadow",
-      targetPath: command.path,
-      surfaceHints: {},
-      evidence: {
-        structural: [
-          `local command name matches plugin-provided command from ${pluginsFor(context.pluginResources.commands, command.name)}`
-        ]
-      },
-      missingKeys: ["user-intent"],
-      summary: `${command.name} shadows plugin command`,
-      nextAllowedStep: "decide whether the override is intentional",
-      blockedActions: ["overwrite local edits"]
-    });
-  }
-  return out;
-}
-
 function detectLocalSkillShadow(context) {
   const localDir = path.join(context.home, "skills");
   const out = [];
@@ -652,7 +626,7 @@ function localCommandIdentityFindings(context, identical) {
             : "local command has diverged from plugin version"
         ]
       },
-      missingKeys: identical ? ["rollback-proof", "user-intent"] : ["user-intent"],
+      missingKeys: ["user-intent"],
       summary: identical
         ? `${command.name} is byte-identical to plugin version`
         : `${command.name} has diverged from plugin version`,
