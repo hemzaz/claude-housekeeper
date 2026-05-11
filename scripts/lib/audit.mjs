@@ -70,6 +70,8 @@ const ALWAYS_ON_DETECTORS = new Set([
   "housekeeper.interrupted_operation",
   "housekeeper.config_invalid",
   "housekeeper.operations_unreadable",
+  "housekeeper.stale_lock",
+  "plugin.cache_referenced_by_hook",
   "home.not_found",
   "home.scan_budget_hit",
   "home.clean"
@@ -103,6 +105,7 @@ export function assembleReport(home, options = {}) {
   // in the report even when downstream detectors crash on the same state.
   push(detectorOutputs, selected, detectHousekeeperConfigInvalid(context));
   push(detectorOutputs, selected, detectHousekeeperOperationsUnreadable(context));
+  push(detectorOutputs, selected, detectHousekeeperStaleLock(context));
 
   push(detectorOutputs, selected, detectSettingsInvalidJson(context));
   pushAll(detectorOutputs, selected, detectHookPathDangling(context));
@@ -111,6 +114,7 @@ export function assembleReport(home, options = {}) {
 
   pushAll(detectorOutputs, selected, detectPluginExpectedOrphan(context));
   pushAll(detectorOutputs, selected, detectPluginCacheUnreferenced(context));
+  pushAll(detectorOutputs, selected, detectPluginCacheReferencedByHook(context));
   pushAll(detectorOutputs, selected, detectPluginDuplicateRegistration(context));
   push(detectorOutputs, selected, detectPluginCacheSize(context));
 
@@ -253,7 +257,8 @@ const SAFE_MODE_LIMIT_BY_ID = {
   "registry.local_command_diverged": "safe-mode-no-loader-key",
   "registry.broken_frontmatter": "safe-mode-no-loader-key",
   "home.scan_budget_hit": "safe-mode-scan-budget",
-  "home.clean": "safe-mode-no-loader-key"
+  "home.clean": "safe-mode-no-loader-key",
+  "plugin.cache_referenced_by_hook": "safe-mode-no-loader-key"
 };
 
 // Apply mode-driven surface.limits per docs/schemas.md and the fixture
@@ -545,6 +550,41 @@ function detectPluginCacheUnreferenced(context) {
     nextAllowedStep: "run freshness probe or review manually",
     blockedActions: ["call unused", "delete", "quarantine without Housekeeper rollback proof"]
   }));
+}
+
+// T-704 step 2: plugin.cache_referenced_by_hook — proactive `protect` stance.
+// Fires for each plugin cache version directory that appears as a substring in
+// any hook command string in settings.json. Cleaning a referenced cache version
+// would dangle the hook. Deduped by targetPath (one finding per cache dir).
+function detectPluginCacheReferencedByHook(context) {
+  if (!context.settings.ok || !context.settings.value) return [];
+  const hookCommands = collectHookCommands(context.settings.value);
+  if (hookCommands.length === 0) return [];
+  const cacheRoot = path.join(context.home, "plugins", "cache");
+  const out = [];
+  for (const versionDir of listCacheVersionDirs(cacheRoot)) {
+    const hookCount = hookCommands.filter((cmd) => cmd.includes(versionDir)).length;
+    if (hookCount === 0) continue;
+    out.push({
+      id: "plugin.cache_referenced_by_hook",
+      class: "contamination",
+      claimLevel: "finding",
+      targetPath: versionDir,
+      surfaceHints: { isPluginCacheVersionDir: true },
+      evidence: {
+        structural: [
+          "plugin cache version directory referenced by a settings hook command",
+          `referenced by ${hookCount} hook command(s)`
+        ]
+      },
+      missingKeys: [],
+      summary: "plugin cache version is referenced by a settings hook; cleaning would break the hook",
+      nextAllowedStep: "remove the hook or pin a different plugin version before cleaning this cache",
+      blockedActions: ["delete cache version", "call unused"],
+      forceStance: "protect"
+    });
+  }
+  return out;
 }
 
 function pluginCacheOrphans(context) {
@@ -858,6 +898,77 @@ function detectHousekeeperOperationsUnreadable(context) {
     summary: "Housekeeper operations directory is unreadable",
     nextAllowedStep: "fix permissions or report the environment damage",
     blockedActions: ["assume no interrupted operation", "start a new mutation"],
+    forceStance: "inform"
+  };
+}
+
+// T-704 step 2: housekeeper.stale_lock — inform-stance orientation finding.
+// Fires when <home>/housekeeper/lock exists and the stalenessAt timestamp is in
+// the past (i.e. the 30-minute window has passed). Does NOT auto-clear the file;
+// the user must remove it manually. Groups near the other housekeeper self-failure
+// detectors (config_invalid, operations_unreadable).
+// No SAFE_MODE_LIMIT_BY_ID entry needed: reading the lockfile content is just a
+// JSON parse of a Housekeeper-owned file — same class as operations manifests,
+// which also have no safe-mode limit token.
+function detectHousekeeperStaleLock(context) {
+  const lockPath = path.join(context.home, "housekeeper", "lock");
+  if (!existsSync(lockPath)) return null;
+  let manifest;
+  try {
+    manifest = JSON.parse(readFileSync(lockPath, "utf8"));
+  } catch {
+    return {
+      id: "housekeeper.stale_lock",
+      class: "orientation",
+      claimLevel: "observation",
+      targetPath: lockPath,
+      surfaceHints: {},
+      evidence: {
+        structural: ["lockfile present but unreadable"]
+      },
+      missingKeys: [],
+      summary: "stale Housekeeper lockfile detected; previous clean/rollback never completed",
+      nextAllowedStep: "verify no other clean/rollback is running, then remove the lockfile manually",
+      blockedActions: ["start a new clean operation", "start a new rollback operation"],
+      forceStance: "inform"
+    };
+  }
+  if (typeof manifest.stalenessAt !== "string") {
+    return {
+      id: "housekeeper.stale_lock",
+      class: "orientation",
+      claimLevel: "observation",
+      targetPath: lockPath,
+      surfaceHints: {},
+      evidence: {
+        structural: ["lockfile present but unreadable"]
+      },
+      missingKeys: [],
+      summary: "stale Housekeeper lockfile detected; previous clean/rollback never completed",
+      nextAllowedStep: "verify no other clean/rollback is running, then remove the lockfile manually",
+      blockedActions: ["start a new clean operation", "start a new rollback operation"],
+      forceStance: "inform"
+    };
+  }
+  const stalenessAt = new Date(manifest.stalenessAt).getTime();
+  if (context.now < stalenessAt) return null;
+  return {
+    id: "housekeeper.stale_lock",
+    class: "orientation",
+    claimLevel: "observation",
+    targetPath: lockPath,
+    surfaceHints: {},
+    evidence: {
+      structural: [
+        `lockfile started at ${manifest.startedAt}`,
+        `staleness window passed at ${manifest.stalenessAt}`,
+        `originating pid: ${manifest.pid} on ${manifest.hostname}`
+      ]
+    },
+    missingKeys: [],
+    summary: "stale Housekeeper lockfile detected; previous clean/rollback never completed",
+    nextAllowedStep: "verify no other clean/rollback is running, then remove the lockfile manually",
+    blockedActions: ["start a new clean operation", "start a new rollback operation"],
     forceStance: "inform"
   };
 }

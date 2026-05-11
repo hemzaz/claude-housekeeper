@@ -389,6 +389,130 @@ test("huge-home-degraded fixture under a generous budget produces no degraded en
   assert.equal(budgetFinding, undefined, "no scan-budget finding when scan completes");
 });
 
+// ---------- T-704 step 2: plugin.cache_referenced_by_hook ----------
+
+test("plugin.cache_referenced_by_hook fires when a hook command contains the cache path", () => {
+  const home = fixtureHome();
+  const versionDir = path.join(home, "plugins", "cache", "m", "p", "1.0.0");
+  mkdirSync(versionDir, { recursive: true });
+  writeJson(path.join(home, "settings.json"), {
+    hooks: {
+      PreToolUse: [
+        { hooks: [{ type: "command", command: `${versionDir}/hook.sh` }] }
+      ]
+    }
+  });
+  const report = assembleReport(home);
+  const findings = report.findings.filter((f) => f.id === "plugin.cache_referenced_by_hook");
+  assert.equal(findings.length, 1, "exactly one finding for the referenced cache dir");
+  const f = findings[0];
+  assert.equal(f.stance, "protect");
+  assert.equal(f.targetPath, versionDir);
+  assert.ok(f.evidence.structural.some((s) => s.includes("1 hook command(s)")));
+});
+
+test("plugin.cache_referenced_by_hook does NOT fire when no hook references the cache", () => {
+  const home = fixtureHome();
+  const versionDir = path.join(home, "plugins", "cache", "m", "p", "1.0.0");
+  mkdirSync(versionDir, { recursive: true });
+  writeJson(path.join(home, "settings.json"), {
+    hooks: {
+      PreToolUse: [
+        { hooks: [{ type: "command", command: "/bin/echo hi" }] }
+      ]
+    }
+  });
+  const report = assembleReport(home);
+  const findings = report.findings.filter((f) => f.id === "plugin.cache_referenced_by_hook");
+  assert.equal(findings.length, 0, "no finding when hook does not reference the cache dir");
+});
+
+test("plugin.cache_referenced_by_hook dedups across multiple hooks referencing the same cache dir", () => {
+  const home = fixtureHome();
+  const versionDir = path.join(home, "plugins", "cache", "m", "p", "1.0.0");
+  mkdirSync(versionDir, { recursive: true });
+  writeJson(path.join(home, "settings.json"), {
+    hooks: {
+      PreToolUse: [
+        { hooks: [{ type: "command", command: `${versionDir}/hook.sh` }] },
+        { hooks: [{ type: "command", command: `${versionDir}/other.sh` }] }
+      ]
+    }
+  });
+  const report = assembleReport(home);
+  const findings = report.findings.filter((f) => f.id === "plugin.cache_referenced_by_hook");
+  assert.equal(findings.length, 1, "exactly one finding even with two hooks referencing the same cache dir");
+  const f = findings[0];
+  assert.ok(f.evidence.structural.some((s) => s.includes("2 hook command(s)")), "hook count reflects both hooks");
+});
+
+// ---------- T-704 step 2: housekeeper.stale_lock ----------
+
+test("housekeeper.stale_lock fires when lockfile is past its staleness window", () => {
+  const home = fixtureHome();
+  const lockPath = path.join(home, "housekeeper", "lock");
+  mkdirSync(path.dirname(lockPath), { recursive: true });
+  const now = Date.now();
+  const manifest = {
+    pid: 12345,
+    hostname: "test-host",
+    opId: "op_test",
+    startedAt: new Date(now - 35 * 60 * 1000).toISOString(),
+    stalenessAt: new Date(now - 5 * 60 * 1000).toISOString()
+  };
+  writeFileSync(lockPath, JSON.stringify(manifest));
+  const report = assembleReport(home);
+  const findings = report.findings.filter((f) => f.id === "housekeeper.stale_lock");
+  assert.equal(findings.length, 1, "one finding when lockfile is past staleness window");
+  const f = findings[0];
+  assert.equal(f.stance, "inform");
+  assert.equal(f.claimLevel, "observation");
+  assert.equal(f.targetPath, lockPath);
+  assert.ok(f.evidence.structural.some((s) => s.includes("12345")), "evidence includes pid");
+  assert.ok(f.evidence.structural.some((s) => s.includes("test-host")), "evidence includes hostname");
+});
+
+test("housekeeper.stale_lock does NOT fire when lockfile is fresh (stalenessAt in the future)", () => {
+  const home = fixtureHome();
+  const lockPath = path.join(home, "housekeeper", "lock");
+  mkdirSync(path.dirname(lockPath), { recursive: true });
+  const now = Date.now();
+  const manifest = {
+    pid: 12345,
+    hostname: "test-host",
+    opId: "op_test",
+    startedAt: new Date(now - 5 * 60 * 1000).toISOString(),
+    stalenessAt: new Date(now + 25 * 60 * 1000).toISOString()
+  };
+  writeFileSync(lockPath, JSON.stringify(manifest));
+  const report = assembleReport(home);
+  const findings = report.findings.filter((f) => f.id === "housekeeper.stale_lock");
+  assert.equal(findings.length, 0, "no finding when lockfile is within its staleness window");
+});
+
+test("housekeeper.stale_lock does NOT fire when no lockfile exists", () => {
+  const home = fixtureHome();
+  const report = assembleReport(home);
+  const findings = report.findings.filter((f) => f.id === "housekeeper.stale_lock");
+  assert.equal(findings.length, 0, "no finding when lockfile is absent");
+});
+
+test("housekeeper.stale_lock handles malformed JSON lockfile", () => {
+  const home = fixtureHome();
+  const lockPath = path.join(home, "housekeeper", "lock");
+  mkdirSync(path.dirname(lockPath), { recursive: true });
+  writeFileSync(lockPath, "not valid json {{{");
+  const report = assembleReport(home);
+  const findings = report.findings.filter((f) => f.id === "housekeeper.stale_lock");
+  assert.equal(findings.length, 1, "one finding for malformed lockfile");
+  const f = findings[0];
+  assert.equal(f.stance, "inform");
+  assert.ok(
+    f.evidence.structural.some((s) => s.includes("unreadable")),
+    "evidence includes 'unreadable' note for malformed lockfile"
+  );
+});
+
 // ---------- helpers ----------
 
 function fixtureHome() {
