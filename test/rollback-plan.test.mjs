@@ -342,3 +342,68 @@ test("abortRollbackOperation refuses applied operation", async () => {
   );
   assert.equal(existsSync(snapshotsDir), true);
 });
+
+// ── Phase 10: file-unlink rollback through generic restorer ──────────────────
+
+async function makeAppliedFileUnlinkOperation() {
+  const parent = await mkdtemp(path.join(tmpdir(), "ck-rollback-fu-"));
+  const claudeHome = path.join(parent, ".claude");
+  const cmdsDir = path.join(claudeHome, "commands");
+  mkdirSync(cmdsDir, { recursive: true });
+  const filePath = path.join(cmdsDir, "victim.md");
+  const originalContent = "# original command body\n";
+  writeFileSync(filePath, originalContent);
+
+  const { opId } = await takeSnapshot(parent, {
+    targets: [filePath],
+    command: "clean",
+    mode: "confirm",
+    consentSummary: "test file-unlink clean"
+  });
+  await applyOperation(opId, parent, [
+    { apply: async () => unlinkSync(filePath) }
+  ]);
+  await verify(opId, parent);
+
+  // Phase 10 metadata: mark mutationKind on file rows. The rollback dispatcher
+  // uses op.rollbackOp.kind (set by makeOperation to "file-restore-from-snapshot")
+  // so this is metadata only; tests assert the round-trip works without a
+  // kind-specific ROLLBACK_REGISTRY entry.
+  const manifestPath = path.join(claudeHome, "housekeeper", "operations", `${opId}.json`);
+  const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+  for (const f of manifest.files || []) f.mutationKind = "file-unlink";
+  writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
+
+  return { parent, claudeHome, opId, filePath, originalContent, manifest };
+}
+
+test("Phase 10: file-unlink op rolls back through file-restore-from-snapshot", async () => {
+  const { claudeHome, opId, filePath, originalContent } = await makeAppliedFileUnlinkOperation();
+
+  assert.equal(existsSync(filePath), false, "precondition: file deleted by clean");
+
+  const plan = await composeRollbackPlan(claudeHome, opId);
+  assert.equal(plan.refused.length, 0, `unexpected refusals: ${JSON.stringify(plan.refused)}`);
+  assert.ok(plan.operations.length >= 1, "expected at least one operation");
+
+  const validated = await validateRollbackPlan(plan, claudeHome);
+  const result = await executeRollbackPlan(validated, claudeHome);
+
+  assert.equal(result.status, "rolled_back");
+  assert.ok(existsSync(filePath), "file should be restored");
+  assert.equal(readFileSync(filePath, "utf8"), originalContent, "content must be byte-identical");
+});
+
+test("Phase 10: file-unlink with corrupted snapshot → SnapshotIntegrityError on validate", async () => {
+  const { claudeHome, opId, filePath, manifest } = await makeAppliedFileUnlinkOperation();
+
+  const fileEntry = manifest.files.find((f) => f.originalPath === filePath);
+  assert.ok(fileEntry?.snapshotPath, "manifest must reference a snapshot file");
+  writeFileSync(fileEntry.snapshotPath, "CORRUPTED\n");
+
+  const plan = await composeRollbackPlan(claudeHome, opId);
+  await assert.rejects(
+    () => validateRollbackPlan(plan, claudeHome),
+    SnapshotIntegrityError
+  );
+});

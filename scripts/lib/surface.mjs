@@ -51,6 +51,25 @@ export function classifySurface(targetPath, hints = {}) {
     });
   }
 
+  // 1b. Housekeeper-owned lockfile or snapshot tree. Phase 10 makes the
+  // stale lockfile cleanable; the snapshot dir is housekeeper-owned and
+  // inert by construction (it carries point-in-time copies, never live state).
+  if (
+    (segmentsContain(norm, ["housekeeper"]) && base === "lock") ||
+    segmentsContain(norm, ["housekeeper", "snapshots"])
+  ) {
+    return makeSurfaceClassification({
+      surfaceClass: "housekeeper-owned",
+      ownerClass: "housekeeper-owned",
+      loadBearingClass: "not-load-bearing",
+      sensitivityClass: "private-path",
+      executionClass: "inert",
+      rollbackClass: "manifest-backed",
+      scopeClass: "in-scope",
+      confidence: "high"
+    });
+  }
+
   // 2. Secret-adjacent / secret-content classification (filename and path heuristics).
   if (isSecretPath(base, norm)) {
     const sensitivity = base === ".env" || /\.pem$|\.key$/i.test(base) || /id_(rsa|ed25519|ecdsa|dsa)/i.test(base)

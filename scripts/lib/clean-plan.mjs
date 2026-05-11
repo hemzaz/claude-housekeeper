@@ -10,8 +10,8 @@
 // Per docs/design/clean-design.md §7 step 3 (T-704).
 
 import { createHash } from "node:crypto";
-import { rm, open, unlink, mkdir, lstat, readFile, readdir } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { rm, open, unlink, mkdir, lstat, readFile, readdir, stat } from "node:fs/promises";
+import { existsSync, unlinkSync } from "node:fs";
 import { join, basename, dirname } from "node:path";
 import os from "node:os";
 import { assembleReport } from "./audit.mjs";
@@ -104,8 +104,13 @@ export class NotImplementedError extends Error {
 
 /**
  * MUTATION_REGISTRY — keyed on mutationKind, each value is a factory (args) =>
- * { apply }. Only "dir-rmtree" is implemented in v0.2.0. Other kinds throw
- * NotImplementedError when the factory is called.
+ * { apply, args }. "dir-rmtree" and "file-unlink" are implemented in v0.2.x;
+ * the remaining two kinds throw NotImplementedError when invoked.
+ *
+ * file-unlink: single-file delete via fs.unlinkSync(args.path). The factory
+ * shape matches the user's Phase 10 spec exactly. Args carries `{ path }`
+ * (absolute) so executeCleanPlan can pass it into takeSnapshot as a single
+ * snapshot target.
  */
 export const MUTATION_REGISTRY = Object.freeze({
   "dir-rmtree": (args) => ({
@@ -125,12 +130,14 @@ export const MUTATION_REGISTRY = Object.freeze({
           // Not yet empty — will succeed on the final file's deletion.
         }
       }
-    }
+    },
+    args
   }),
 
-  "file-unlink": (_args) => {
-    throw new NotImplementedError("file-unlink");
-  },
+  "file-unlink": (args) => ({
+    apply: () => unlinkSync(args.path),
+    args
+  }),
 
   "file-replace": (_args) => {
     throw new NotImplementedError("file-replace");
@@ -141,9 +148,28 @@ export const MUTATION_REGISTRY = Object.freeze({
   }
 });
 
-// ── v0.2.0 cleanable detector set ────────────────────────────────────────────
+// ── v0.2.x cleanable detector set ────────────────────────────────────────────
+// Phase 10 added "housekeeper.stale_lock" and "registry.local_command_identical".
+// Both compose into file-unlink operations. Q-USER-3 keeps "plugin.expected_orphan"
+// permanently OUT of this set.
 
-const CLEANABLE_DETECTORS_V02 = new Set(["plugin.cache_unreferenced"]);
+const CLEANABLE_DETECTORS_V02 = new Set([
+  "plugin.cache_unreferenced",
+  "housekeeper.stale_lock",
+  "registry.local_command_identical"
+]);
+
+// Detectors whose findings compose into file-unlink (vs dir-rmtree) operations.
+const FILE_UNLINK_DETECTORS_V02 = new Set([
+  "housekeeper.stale_lock",
+  "registry.local_command_identical"
+]);
+
+// Lockfile staleness window — must match LOCK_STALE_WINDOW_MS below and
+// audit.mjs detectHousekeeperStaleLock. Used by the stale-lock-not-yet-eligible
+// refusal so defense-in-depth holds even if a future detector changes its
+// staleness threshold.
+const STALE_LOCK_WINDOW_MS = 30 * 60 * 1000;
 
 // ── Sector-boundary path test ─────────────────────────────────────────────────
 
@@ -171,6 +197,55 @@ function hashReport(report) {
     }))
   );
   return createHash("sha256").update(stable).digest("hex");
+}
+
+// ── File hash + plugin-command lookup helpers (Phase 10 drift detection) ─────
+//
+// safeHashFile returns "" on any read error so callers can compare equality
+// without try/catch noise. Matches the semantics audit.mjs uses for hashFile
+// in safe mode.
+
+async function safeHashFile(filePath) {
+  try {
+    const buf = await readFile(filePath);
+    return createHash("sha256").update(buf).digest("hex");
+  } catch {
+    return "";
+  }
+}
+
+// Walk every installed plugin's commands/ dir and return true if any command
+// whose basename (without .md) matches `commandName` hashes equal to `wantHash`.
+// Mirrors audit.mjs `localCommandIdentityFindings` semantics so compose-time
+// drift detection lines up with the audit detector.
+async function anyPluginCommandMatchesHash(home, commandName, wantHash) {
+  if (!wantHash) return false;
+  const installedPath = join(home, "plugins", "installed_plugins.json");
+  let installed;
+  try {
+    installed = JSON.parse(await readFile(installedPath, "utf8"));
+  } catch {
+    return false;
+  }
+  const plugins = Array.isArray(installed?.plugins) ? installed.plugins : [];
+  for (const record of plugins) {
+    if (!record || typeof record !== "object") continue;
+    const installPath = record.installPath
+      || join(home, "plugins", "cache", record.marketplace || "unknown", record.name || "unknown", record.version || "unknown");
+    const commandsDir = join(installPath, "commands");
+    if (!existsSync(commandsDir)) continue;
+    const candidates = await walkDir(commandsDir);
+    for (const file of candidates) {
+      if (!file.endsWith(".md")) continue;
+      // Match by relative basename so nested command dirs (commands/foo/bar.md)
+      // align with audit's name resolution.
+      const relName = file.slice(commandsDir.length + 1).replace(/\.md$/, "");
+      if (relName !== commandName) continue;
+      const pluginHash = await safeHashFile(file);
+      if (pluginHash === wantHash) return true;
+    }
+  }
+  return false;
 }
 
 // ── Directory walk (files + symlinks, no recursion into symlinks) ─────────────
@@ -244,7 +319,7 @@ async function hasMcpServer(targetPath) {
 
 // ── 12-rule classifier (synchronous; async pre-checks done before this call) ─
 
-function classifyFinding(finding, { home, interruptions, symlinkedPaths, mcpPaths, refByHookPaths, doNotTouchRules }) {
+function classifyFinding(finding, { home, interruptions, symlinkedPaths, mcpPaths, refByHookPaths, doNotTouchRules, freshLockPaths, driftedLocalCommandPaths }) {
   const id = finding.id;
   const targetPath = finding.targetPath || "";
   const surface = finding.surface || {};
@@ -305,8 +380,12 @@ function classifyFinding(finding, { home, interruptions, symlinkedPaths, mcpPath
   }
 
   // Rule 6: owner — surface ownerClass not in {claude-managed, user-owned}.
+  // Phase 10 exception: housekeeper.stale_lock cleans housekeeper's OWN lockfile,
+  // so housekeeper-owned is the correct owner for the only path it acts on.
   const allowedOwners = new Set(["claude-managed", "user-owned"]);
-  if (surface.ownerClass && !allowedOwners.has(surface.ownerClass)) {
+  const housekeeperSelfCleanup =
+    id === "housekeeper.stale_lock" && surface.ownerClass === "housekeeper-owned";
+  if (surface.ownerClass && !allowedOwners.has(surface.ownerClass) && !housekeeperSelfCleanup) {
     return {
       refuse: true,
       reason: "owner",
@@ -350,6 +429,34 @@ function classifyFinding(finding, { home, interruptions, symlinkedPaths, mcpPath
   // Rule 11: missing-key — evidence.missing.length > 0.
   // Like rule 10, only applied to cleanable detectors; for non-cleanable
   // detectors the surface "not cleanable" reason takes precedence (rule 12).
+
+  // Phase 10 — defense-in-depth refusals for the two file-unlink detectors:
+  //
+  // stale-lock-not-yet-eligible: the audit detector already gates on the
+  // 30-min staleness window, but compose re-runs assembleReport (Q-USER-2)
+  // and may race with a lockfile written between the detector emission and
+  // this classifier call. Refuse cleanly if the lock has been refreshed
+  // such that stalenessAt is now in the future.
+  if (id === "housekeeper.stale_lock" && freshLockPaths.has(targetPath)) {
+    return {
+      refuse: true,
+      reason: "stale-lock-not-yet-eligible",
+      message: `Lockfile at ${targetPath} is not yet stale; the 30 min staleness window has not elapsed`
+    };
+  }
+
+  // drift-detected: local command file is no longer byte-identical to its
+  // plugin counterpart at compose time. The audit detector hashes both files
+  // when assembleReport runs, but a race between assembleReport and the
+  // classifier (or a partial write) can leave the finding stale. Refuse
+  // cleanly rather than delete a divergent file.
+  if (id === "registry.local_command_identical" && driftedLocalCommandPaths.has(targetPath)) {
+    return {
+      refuse: true,
+      reason: "drift-detected",
+      message: `Local command at ${targetPath} is no longer byte-identical to its plugin counterpart`
+    };
+  }
 
   // Rule 12: no-mutation-mapping-in-v0.2 — detector id not in cleanable set.
   // Evaluated last so that cleanable detectors bypass stance/missing-key checks
@@ -426,6 +533,45 @@ export async function composeCleanPlan(home, options = {}) {
     }
   }
 
+  // Phase 10 pre-checks for the two file-unlink detectors.
+  // freshLockPaths: paths whose stalenessAt is still in the future (race-safe).
+  // driftedLocalCommandPaths: local command files that are no longer byte-
+  //   identical to ANY plugin counterpart at compose time. Recomputing the
+  //   hash here is intentional — assembleReport already ran (Q-USER-2) but
+  //   the freshness window is measured per-classifier-call.
+  const freshLockPaths = new Set();
+  const driftedLocalCommandPaths = new Set();
+  const now = Date.now();
+  for (const f of candidates) {
+    if (f.id === "housekeeper.stale_lock" && f.targetPath && existsSync(f.targetPath)) {
+      try {
+        const raw = await readFile(f.targetPath, "utf8");
+        const manifest = JSON.parse(raw);
+        if (typeof manifest.stalenessAt === "string") {
+          const stalenessAt = new Date(manifest.stalenessAt).getTime();
+          if (Number.isFinite(stalenessAt) && now < stalenessAt) {
+            freshLockPaths.add(f.targetPath);
+          }
+        } else if (typeof manifest.startedAt === "string") {
+          // Legacy manifest without stalenessAt — derive from startedAt + 30m.
+          const startedAt = new Date(manifest.startedAt).getTime();
+          if (Number.isFinite(startedAt) && now < startedAt + STALE_LOCK_WINDOW_MS) {
+            freshLockPaths.add(f.targetPath);
+          }
+        }
+      } catch {
+        // Unreadable / unparseable lock — fall through to audit's detector
+        // semantics. Audit emits stale_lock for unreadable locks too, so the
+        // user can clean them.
+      }
+    }
+    if (f.id === "registry.local_command_identical" && f.targetPath && existsSync(f.targetPath)) {
+      const localHash = await safeHashFile(f.targetPath);
+      const matched = await anyPluginCommandMatchesHash(home, basename(f.targetPath, ".md"), localHash);
+      if (!matched) driftedLocalCommandPaths.add(f.targetPath);
+    }
+  }
+
   const operations = [];
   const refused = [];
 
@@ -436,7 +582,9 @@ export async function composeCleanPlan(home, options = {}) {
       symlinkedPaths,
       mcpPaths,
       refByHookPaths,
-      doNotTouchRules
+      doNotTouchRules,
+      freshLockPaths,
+      driftedLocalCommandPaths
     });
 
     if (verdict.refuse) {
@@ -451,25 +599,42 @@ export async function composeCleanPlan(home, options = {}) {
       continue;
     }
 
-    // Build CleanOperation.
+    // Build CleanOperation. Phase 10: branch on detector id — file-unlink
+    // detectors snapshot a single file; dir-rmtree detectors walk a directory.
     const tp = finding.targetPath;
-    let expandedFiles = [];
-    let estBytes = 0;
-    if (existsSync(tp)) {
-      expandedFiles = await walkDir(tp);
-      estBytes = await estimateBytes(expandedFiles);
+    if (FILE_UNLINK_DETECTORS_V02.has(finding.id)) {
+      let estBytes = 0;
+      if (existsSync(tp)) {
+        try { estBytes = (await stat(tp)).size; } catch { estBytes = 0; }
+      }
+      operations.push({
+        detectorId: finding.id,
+        targetPath: tp,
+        mutationKind: "file-unlink",
+        mutationOp: { kind: "file-unlink", args: { path: tp } },
+        snapshotStrategy: "file-unlink",
+        estimatedBytes: estBytes,
+        expandedFiles: [tp],
+        expectedExitState: "verified"
+      });
+    } else {
+      let expandedFiles = [];
+      let estBytes = 0;
+      if (existsSync(tp)) {
+        expandedFiles = await walkDir(tp);
+        estBytes = await estimateBytes(expandedFiles);
+      }
+      operations.push({
+        detectorId: finding.id,
+        targetPath: tp,
+        mutationKind: "dir-rmtree",
+        mutationOp: { kind: "dir-rmtree", args: { dirPath: tp } },
+        snapshotStrategy: "dir-rmtree",
+        estimatedBytes: estBytes,
+        expandedFiles,
+        expectedExitState: "verified"
+      });
     }
-
-    operations.push({
-      detectorId: finding.id,
-      targetPath: tp,
-      mutationKind: "dir-rmtree",
-      mutationOp: { kind: "dir-rmtree", args: { dirPath: tp } },
-      snapshotStrategy: "dir-rmtree",
-      estimatedBytes: estBytes,
-      expandedFiles,
-      expectedExitState: "verified"
-    });
   }
 
   // Enforce one operation per plan (v0.2 constraint per §1.6).
@@ -658,8 +823,11 @@ export async function executeCleanPlan(plan, home) {
     let finalManifest;
 
     for (const op of plan.operations) {
+      const consentLabel = op.mutationKind === "file-unlink"
+        ? "remove single file"
+        : "remove plugin cache version directory";
       const consentSummary = [
-        `clean --confirm --yes — remove plugin cache version directory`,
+        `clean --confirm --yes — ${consentLabel}`,
         `  detector: ${op.detectorId}`,
         `  target:   ${op.targetPath}`,
         `  files:    ${op.expandedFiles ? op.expandedFiles.length : 0}`,
@@ -677,22 +845,31 @@ export async function executeCleanPlan(plan, home) {
         consentSummary
       });
 
-      // Materialise apply callables from the dir-rmtree descriptor.
-      const dirPath = op.mutationOp.args.dirPath;
-      const ops = targets.map((_, i) => ({
-        apply: async (origPath) => {
-          // Remove the individual file.
-          await rm(origPath, { recursive: false, force: false });
-          // After the last file, recursively remove the directory.
-          if (i === targets.length - 1) {
-            try {
-              await rm(dirPath, { recursive: true, force: false });
-            } catch {
-              // May already be gone if earlier deletes cleaned it up.
+      // Materialise apply callables. Phase 10: dispatch on mutationOp.kind.
+      let ops;
+      if (op.mutationOp.kind === "file-unlink") {
+        // One target, one apply — straight unlink.
+        ops = targets.map(() => ({
+          apply: async (origPath) => {
+            await rm(origPath, { recursive: false, force: false });
+          }
+        }));
+      } else {
+        // dir-rmtree: per-file unlink, then rmdir on the last entry.
+        const dirPath = op.mutationOp.args.dirPath;
+        ops = targets.map((_, i) => ({
+          apply: async (origPath) => {
+            await rm(origPath, { recursive: false, force: false });
+            if (i === targets.length - 1) {
+              try {
+                await rm(dirPath, { recursive: true, force: false });
+              } catch {
+                // May already be gone if earlier deletes cleaned it up.
+              }
             }
           }
-        }
-      }));
+        }));
+      }
 
       const appliedManifest = await applyOperation(opId, snapshotHome, ops);
 
