@@ -330,3 +330,24 @@ npm test
 npm run lint
 npm run format
 ```
+
+### Soak runner
+
+Before tagging a GA release (per `notes/RELEASE-READINESS-v0.2.0.md §5`),
+run `scripts/soak.sh` nightly for 5–7 nights against a real Claude home.
+The script is read-only — it never invokes `clean`, `rollback`, or
+`harden` — and writes one dated directory per night into
+`.omc/research/soak-YYYYMMDD/`.
+
+```bash
+# Default: against ~/.claude
+scripts/soak.sh
+
+# Against a specific home
+scripts/soak.sh /path/to/.claude
+CLAUDE_HOME=/path/to/.claude scripts/soak.sh
+```
+
+The script PASSes when no stop conditions trigger (`filesChanged: true`
+in any read-only output, schemaVersion drift, malformed op id, empty
+refusal message) and exits 2 if any do.
