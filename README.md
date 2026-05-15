@@ -142,9 +142,11 @@ subdirectory. Passing the `.claude` directory itself is also accepted for
 fixture and test harnesses.
 
 See [docs/compatibility-matrix.md](docs/compatibility-matrix.md) for
-the tested platform matrix and
+the tested platform matrix,
 [docs/schema-stability.md](docs/schema-stability.md) for the stable
-JSON fields the `--json` output guarantees.
+JSON fields the `--json` output guarantees, and
+[docs/versioning-policy.md](docs/versioning-policy.md) for what counts
+as a breaking change.
 
 ## SessionStart Prevention Hook
 
@@ -330,3 +332,24 @@ npm test
 npm run lint
 npm run format
 ```
+
+### Soak runner
+
+Before tagging a GA release (per `notes/RELEASE-READINESS-v0.2.0.md §5`),
+run `scripts/soak.sh` nightly for 5–7 nights against a real Claude home.
+The script is read-only — it never invokes `clean`, `rollback`, or
+`harden` — and writes one dated directory per night into
+`.omc/research/soak-YYYYMMDD/`.
+
+```bash
+# Default: against ~/.claude
+scripts/soak.sh
+
+# Against a specific home
+scripts/soak.sh /path/to/.claude
+CLAUDE_HOME=/path/to/.claude scripts/soak.sh
+```
+
+The script PASSes when no stop conditions trigger (`filesChanged: true`
+in any read-only output, schemaVersion drift, malformed op id, empty
+refusal message) and exits 2 if any do.

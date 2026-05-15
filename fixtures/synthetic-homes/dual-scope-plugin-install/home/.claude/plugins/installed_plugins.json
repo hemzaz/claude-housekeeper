@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "plugins": {
+    "syn-tool@syn-market": [
+      {
+        "scope": "user",
+        "version": "1.0.0",
+        "enabled": true
+      },
+      {
+        "scope": "project",
+        "projectPath": "/syn-project",
+        "version": "1.0.0",
+        "enabled": true
+      }
+    ]
+  }
+}

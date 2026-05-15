@@ -312,6 +312,8 @@ async function runCleanInner(options) {
         for (const r of plan.refused) {
           console.log(`Refusing: ${r.detectorId} is not cleanable in v0.2.0.`);
           console.log(`Reason: ${r.reason}.`);
+          if (r.message) console.log(r.message);
+          if (r.nextStep) console.log(`  Next: ${r.nextStep}`);
         }
       }
     }
@@ -333,6 +335,8 @@ async function runCleanInner(options) {
         for (const r of plan.refused) {
           console.log(`Refusing: ${r.detectorId} is not cleanable in v0.2.0.`);
           console.log(`Reason: ${r.reason}.`);
+          if (r.message) console.log(r.message);
+          if (r.nextStep) console.log(`  Next: ${r.nextStep}`);
         }
       }
       process.exitCode = 2;

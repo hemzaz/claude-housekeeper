@@ -1,0 +1,29 @@
+HOUSEKEEPER REPORT
+No files changed.
+
+PRIMARY
+  stance: inform
+  finding: plugin cache uses 121 B across 1 version directories
+  evidence: plugin cache contains 1 version directories; total size 121 B; largest: local/my-local-tool (121 B across 1 version)
+  missing key: none
+  next step: none
+
+STANCE SUMMARY
+  inform   1
+  watch    0
+  review   0
+  probe    0
+  protect  0
+  prepare  0
+  repair   0
+  block    0
+
+BOUNDARIES
+  protected: 0
+  sector-boundary: 0
+  secret-adjacent skipped: 0
+
+SCAN
+  mode: safe
+  degraded: no
+  skipped: live Claude probes

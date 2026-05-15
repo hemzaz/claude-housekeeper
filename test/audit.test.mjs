@@ -207,7 +207,10 @@ test("legacy operation manifests emit a legacy interrupted-operation finding", (
   const report = assembleReport(home);
   const interrupted = report.findings.find((f) => f.id === "housekeeper.interrupted_operation");
   assert.ok(interrupted, "interrupted finding must exist");
-  assert.equal(interrupted.nextAllowedStep, `rollback ${opId}`);
+  // G16: legacy manifests are coerced to `planned` status for display and
+  // routed to `--abort` (pre-apply recovery). Earlier code sent users to
+  // bare `rollback <id>`, which requires `applied` and refused — a dead end.
+  assert.equal(interrupted.nextAllowedStep, `rollback ${opId} --abort`);
   assert.match(interrupted.summary, /legacy operation manifest \(pre-v0\.2\)/i);
   assert.match(interrupted.summary, /status assumed planned/i);
   assert.deepEqual(interrupted.evidence.structural, [
@@ -215,6 +218,25 @@ test("legacy operation manifests emit a legacy interrupted-operation finding", (
     "manifest schemaVersion is legacy",
     "status assumed planned"
   ]);
+});
+
+// G16: explicit `planned` status (non-legacy) routes to `--abort` too.
+// This pins the hint-to-command mapping for every non-terminal status:
+//   planned        → rollback <id> --abort  (this test)
+//   snapshot_taken → rollback <id> --abort  (covered below)
+//   applied        → rollback <id>          (covered above)
+test("interrupted planned operation points at rollback abort command (G16)", () => {
+  const home = fixtureHome();
+  const opsDir = path.join(home, "housekeeper/operations");
+  mkdirSync(opsDir, { recursive: true });
+  const opId = "op_20260511143022_b2c3d4e5";
+  writeJson(path.join(opsDir, `${opId}.json`), { schemaVersion: "0.2", status: "planned" });
+
+  const report = assembleReport(home);
+  const interrupted = report.findings.find((f) => f.id === "housekeeper.interrupted_operation");
+  assert.ok(interrupted, "interrupted finding must exist");
+  assert.equal(interrupted.nextAllowedStep, `rollback ${opId} --abort`);
+  assert.match(interrupted.summary, /planned/);
 });
 
 test("interrupted applied operation points at rollback command", () => {
