@@ -380,8 +380,12 @@ export async function executeRollbackPlan(plan, home) {
 /**
  * abortRollbackOperation(opId, home) — cancel a pre-apply operation.
  *
- * Aborting is intentionally narrower than rollback: only snapshot_taken
- * operations are eligible because no user files have been mutated yet.
+ * Aborting is intentionally narrower than rollback: only pre-apply
+ * statuses (`planned`, `snapshot_taken`) are eligible because no user
+ * files have been mutated yet. CHANGELOG.md v0.2.0-beta.1 pins both
+ * statuses as abortable; the audit hint for
+ * `housekeeper.interrupted_operation` routes both to
+ * `rollback <id> --abort`.
  */
 export async function abortRollbackOperation(opId, home) {
   const lockPath = join(home, "housekeeper", "lock");
@@ -402,7 +406,7 @@ export async function abortRollbackOperation(opId, home) {
   try {
     const sourceManifestPath = join(home, "housekeeper", "operations", `${opId}.json`);
     const manifest = await readOperationManifest(sourceManifestPath);
-    if (manifest.status !== "snapshot_taken") {
+    if (manifest.status !== "snapshot_taken" && manifest.status !== "planned") {
       throw new AbortNotAllowedError(opId, manifest.status);
     }
 

@@ -343,6 +343,29 @@ test("abortRollbackOperation refuses applied operation", async () => {
   assert.equal(existsSync(snapshotsDir), true);
 });
 
+// G16: planned-status pre-apply operations are abortable per the
+// CHANGELOG v0.2.0-beta.1 contract. Earlier code refused anything but
+// `snapshot_taken`; the audit hint sent users to plain `rollback <id>`,
+// which then refused (rollback requires `applied`) — a dead-end loop.
+test("abortRollbackOperation aborts planned operation (G16)", async () => {
+  const { claudeHome, opId, operationsDir, snapshotsDir } = await makeSnapshotTakenOperation();
+
+  // Downgrade the manifest to a `planned` state (the on-disk status that
+  // results when a takeSnapshot is interrupted before the snapshot files
+  // are written, or that audit coerces legacy manifests into).
+  const manifestPath = path.join(operationsDir, `${opId}.json`);
+  const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+  manifest.status = "planned";
+  writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
+
+  const updated = await abortRollbackOperation(opId, claudeHome);
+
+  assert.equal(updated.status, "aborted");
+  assert.match(updated.abortedAt, /^\d{4}-\d{2}-\d{2}T/);
+  assert.equal(existsSync(snapshotsDir), false);
+  assert.equal(existsSync(path.join(claudeHome, "housekeeper", "lock")), false);
+});
+
 // ── Phase 10: file-unlink rollback through generic restorer ──────────────────
 
 async function makeAppliedFileUnlinkOperation() {
