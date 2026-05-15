@@ -142,9 +142,11 @@ subdirectory. Passing the `.claude` directory itself is also accepted for
 fixture and test harnesses.
 
 See [docs/compatibility-matrix.md](docs/compatibility-matrix.md) for
-the tested platform matrix and
+the tested platform matrix,
 [docs/schema-stability.md](docs/schema-stability.md) for the stable
-JSON fields the `--json` output guarantees.
+JSON fields the `--json` output guarantees, and
+[docs/versioning-policy.md](docs/versioning-policy.md) for what counts
+as a breaking change.
 
 ## SessionStart Prevention Hook
 

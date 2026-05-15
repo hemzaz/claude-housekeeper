@@ -1,0 +1,11 @@
+{
+  "plugins": [
+    {
+      "name": "my-local-tool",
+      "marketplace": "local",
+      "version": "1.0.0",
+      "enabled": true,
+      "installSource": "local"
+    }
+  ]
+}

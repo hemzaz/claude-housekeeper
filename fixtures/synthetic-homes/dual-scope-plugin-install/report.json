@@ -1,0 +1,56 @@
+{
+  "schemaVersion": "0.1",
+  "mode": "safe",
+  "home": "<home>",
+  "filesChanged": false,
+  "primary": "plugin.duplicate_registration",
+  "stanceSummary": {
+    "inform": 0,
+    "watch": 0,
+    "review": 1,
+    "probe": 0,
+    "protect": 0,
+    "prepare": 0,
+    "repair": 0,
+    "block": 0
+  },
+  "findings": [
+    {
+      "id": "plugin.duplicate_registration",
+      "class": "divergence",
+      "claimLevel": "finding",
+      "stance": "review",
+      "summary": "syn-tool@syn-market is registered in multiple scopes",
+      "surface": {
+        "surfaceClass": "claude-app-data",
+        "ownerClass": "claude-managed",
+        "loadBearingClass": "possibly-load-bearing",
+        "sensitivityClass": "private-path",
+        "executionClass": "inert",
+        "rollbackClass": "snapshot-possible",
+        "scopeClass": "in-scope",
+        "confidence": "medium",
+        "limits": ["safe-mode-no-loader-key"]
+      },
+      "evidence": {
+        "structural": [
+          "syn-tool@syn-market has 2 registrations across 2 scope(s)"
+        ],
+        "loader": [],
+        "behavioral": [],
+        "ownership": [],
+        "freshness": [],
+        "reversibility": [],
+        "missing": [
+          "user-intent"
+        ]
+      },
+      "nextAllowedStep": "review intent before any change",
+      "blockedActions": [
+        "mutate registry without intent confirmation"
+      ]
+    }
+  ],
+  "boundaries": [],
+  "degraded": []
+}
