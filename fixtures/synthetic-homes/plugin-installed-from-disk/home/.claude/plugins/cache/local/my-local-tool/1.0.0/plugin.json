@@ -1,0 +1,5 @@
+{
+  "name": "my-local-tool",
+  "version": "1.0.0",
+  "description": "synthetic local-disk plugin for fixture coverage"
+}
