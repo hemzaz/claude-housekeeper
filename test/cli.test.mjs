@@ -364,3 +364,24 @@ test("rollback --abort without --confirm refuses without changing snapshot_taken
   const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
   assert.equal(manifest.status, "snapshot_taken");
 });
+
+// G15: --timeout is documented in help so users discover it.
+test("--timeout appears in help text with deadline wording", () => {
+  const result = runCli(["--help"]);
+  assert.equal(result.status, 0);
+  assert.match(result.stdout, /--timeout=<seconds>/);
+  assert.match(result.stdout, /exits 124/);
+});
+
+// G15: invalid --timeout values must be caught at parse time, not after work begins.
+test("clean --timeout=invalid exits non-zero with parse error (G15)", () => {
+  const result = runCli(["clean", "--timeout=not-a-number"]);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr + result.stdout, /Invalid --timeout value/);
+});
+
+test("clean --timeout=-5 is refused as non-positive (G15)", () => {
+  const result = runCli(["clean", "--timeout=-5"]);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr + result.stdout, /Invalid --timeout value/);
+});
