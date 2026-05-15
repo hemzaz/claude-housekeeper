@@ -58,6 +58,11 @@ Options:
   --home=<path>       Claude home root (default: $CLAUDE_HOME or ~/.claude).
   --config=<path>     Override the housekeeper config path.
   --max-files=<n>     Bound the projects-tree walk; emits home.scan_budget_hit if hit.
+  --timeout=<seconds> For clean: wall-clock deadline. If clean has not finished
+                        when the timer fires, the process exits 124 (matches
+                        timeout(1)). Designed for CI / network mounts where
+                        composeCleanPlan re-runs assembleReport (Q-USER-2).
+                        Default: no deadline.
   --dry-run           For rollback, print the rollback plan without changing files.
   --abort             For rollback, cancel a snapshot_taken operation and delete
                         its unused snapshot tree.
@@ -122,7 +127,8 @@ function parseArgs(argv) {
     scanLimits: null,
     target: null,
     path: null,
-    abort: false
+    abort: false,
+    timeoutSeconds: 0
   };
 
   for (const arg of args) {
@@ -142,6 +148,14 @@ function parseArgs(argv) {
     }
     else if (arg.startsWith("--target=")) options.target = arg.slice("--target=".length);
     else if (arg.startsWith("--path=")) options.path = arg.slice("--path=".length);
+    else if (arg.startsWith("--timeout=")) {
+      const raw = arg.slice("--timeout=".length);
+      const parsed = Number(raw);
+      if (!Number.isFinite(parsed) || parsed <= 0) {
+        throw new Error(`Invalid --timeout value: ${raw} — must be a positive number of seconds.`);
+      }
+      options.timeoutSeconds = parsed;
+    }
     else if (command === "rollback" && !options.rollbackId) options.rollbackId = arg;
     else throw new Error(`Unknown argument: ${arg} — run \`claude-housekeeper --help\` for usage.`);
   }
@@ -229,7 +243,33 @@ function formatBytes(bytes) {
   return `${bytes} B`;
 }
 
+// G15: arm a wall-clock deadline for the clean pipeline. Sync stretches of
+// assembleReport will not preempt mid-flight, but the timer fires reliably
+// between awaited stages (composeCleanPlan → validateCleanPlan → executeCleanPlan)
+// and when the event loop reaches the next tick after sync work. Exit code
+// 124 matches GNU `timeout(1)` so CI can detect deadline expiry distinctly
+// from refusal (2) or runtime failure (1).
+function armCleanTimeout(options) {
+  if (!options.timeoutSeconds || options.timeoutSeconds <= 0) return () => {};
+  const ms = Math.round(options.timeoutSeconds * 1000);
+  const timer = setTimeout(() => {
+    process.stderr.write(`clean: deadline ${options.timeoutSeconds}s reached; aborting.\n`);
+    process.exit(124);
+  }, ms);
+  if (typeof timer.unref === "function") timer.unref();
+  return () => clearTimeout(timer);
+}
+
 async function runClean(options) {
+  const clearDeadline = armCleanTimeout(options);
+  try {
+    return await runCleanInner(options);
+  } finally {
+    clearDeadline();
+  }
+}
+
+async function runCleanInner(options) {
   // Branch 1: no --confirm → dry-run plan view.
   // (This branch is actually handled in the dispatcher early-exit gate, but kept here for clarity.)
   if (!options.confirm) {
