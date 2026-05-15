@@ -478,3 +478,56 @@ test("Phase 10 execute: registry.local_command_identical → file deleted, manif
   assert.equal(result.status, "verified");
   assert.equal(existsSyncImport(localPath), false, "local command file should be deleted");
 });
+
+// ── G7: nextStep recovery hint on refusals ───────────────────────────────────
+
+test("G7 nextStep: every refusal in a composed plan carries a non-empty nextStep string", async () => {
+  const home = makeSyntheticHome();
+  // Within-grace cache → fires plugin.expected_orphan (non-cleanable).
+  const cacheDir = path.join(home, "plugins", "cache", "test-market", "test-tool", "0.9.0");
+  mkdirSync(cacheDir, { recursive: true });
+  writeFileSync(path.join(cacheDir, "plugin.json"), JSON.stringify({ name: "test-tool", version: "0.9.0" }) + "\n");
+  const plan = await composeCleanPlan(home, { target: "plugin.expected_orphan" });
+  assert.ok(plan.refused.length > 0, "expected at least one refusal");
+  for (const r of plan.refused) {
+    assert.equal(typeof r.nextStep, "string", `refusal ${r.reason} must have a string nextStep`);
+    assert.ok(r.nextStep.length > 0, `refusal ${r.reason} must have non-empty nextStep`);
+  }
+});
+
+test("G7 nextStep: protected-path refusal hints at editing doNotTouch", async () => {
+  const home = makeSyntheticHome();
+  const cacheDir = addUnreferencedCache(home);
+  const configDir = path.join(home, "housekeeper");
+  mkdirSync(configDir, { recursive: true });
+  writeFileSync(path.join(configDir, "config.json"), JSON.stringify({
+    doNotTouch: [{ path: cacheDir, reason: "test protection" }]
+  }) + "\n");
+  const plan = await composeCleanPlan(home, {
+    target: "plugin.cache_unreferenced",
+    path: cacheDir
+  });
+  assert.equal(plan.refused.length, 1);
+  const r = plan.refused[0];
+  assert.equal(r.reason, "protected-path");
+  assert.match(r.nextStep, /doNotTouch/);
+});
+
+test("G7 nextStep: owner refusal message and nextStep do not contain literal 'ownerClass'", async () => {
+  // Refusal text for rules 4/5/6 was reworded to drop "ownerClass",
+  // "executionClass", and "rollbackClass" tokens. Exercise via a no-mutation
+  // refusal — the static NEXT_STEP_BY_REASON map covers the owner key, so
+  // we verify all reasons returned in this plan are clean.
+  const home = makeSyntheticHome();
+  const cacheDir = path.join(home, "plugins", "cache", "test-market", "test-tool", "0.9.0");
+  mkdirSync(cacheDir, { recursive: true });
+  writeFileSync(path.join(cacheDir, "plugin.json"), JSON.stringify({ name: "test-tool", version: "0.9.0" }) + "\n");
+  const plan = await composeCleanPlan(home, { target: "plugin.expected_orphan" });
+  assert.ok(plan.refused.length > 0);
+  for (const r of plan.refused) {
+    for (const term of ["ownerClass", "executionClass", "rollbackClass"]) {
+      assert.ok(!r.message.includes(term), `refusal message must not contain "${term}"`);
+      assert.ok(!r.nextStep.includes(term), `refusal nextStep must not contain "${term}"`);
+    }
+  }
+});

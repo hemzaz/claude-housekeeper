@@ -317,6 +317,44 @@ async function hasMcpServer(targetPath) {
   return false;
 }
 
+// ── G7: per-refusal-reason recovery hints ────────────────────────────────────
+// Each string completes "Next: ..." rendered under the refusal message in CLI
+// plan-mode output and is emitted verbatim in --json output. Hints intentionally
+// avoid internal vocabulary (ownerClass, executionClass, rollbackClass) the user
+// has not encountered. Keys must stay in sync with the reasons returned by
+// classifyFinding below.
+
+const NEXT_STEP_BY_REASON = Object.freeze({
+  "plan-state-error":
+    "Run `claude-housekeeper rollback <opId>` on the interrupted operation, then re-run `clean`.",
+  "protected-path":
+    "Remove the path from `doNotTouch` in `<home>/housekeeper/config.json` or pick a different target.",
+  "sector-boundary":
+    "Housekeeper will not clean credential or secret paths. Delete manually with `rm` only after verifying contents.",
+  "execution-class":
+    "Surface is not safe to mutate automatically. Review the source manually; no `clean` action is available.",
+  "rollback-class":
+    "Operation is not reversible by Housekeeper. No automated action; review the source manually.",
+  "owner":
+    "Files owned by Claude or plugin internals cannot be cleaned; report a false positive if this surprises you.",
+  "plugin-symlinked-cache":
+    "Resolve the symlink manually and re-run `clean` on the real path.",
+  "plugin-cache-referenced-by-hook":
+    "Remove the hook entry referencing this path in `<home>/settings.json`, then re-run `clean`.",
+  "plugin-cache-has-mcp-server":
+    "Uninstall the plugin via `claude plugin uninstall <name> --scope <scope>`; that releases the MCP server cleanly.",
+  "stale-lock-not-yet-eligible":
+    "Wait for the 30-minute staleness window to elapse, then re-run `clean`.",
+  "drift-detected":
+    "Local command no longer matches its plugin counterpart. Inspect with `diff` and resolve manually.",
+  "no-mutation-mapping-in-v0.2":
+    "Not cleanable in v0.2.0. Track the roadmap in CHANGELOG.md; use `rm` only if you accept the risk."
+});
+
+function nextStepFor(reason) {
+  return NEXT_STEP_BY_REASON[reason] || "";
+}
+
 // ── 12-rule classifier (synchronous; async pre-checks done before this call) ─
 
 function classifyFinding(finding, { home, interruptions, symlinkedPaths, mcpPaths, refByHookPaths, doNotTouchRules, freshLockPaths, driftedLocalCommandPaths }) {
@@ -362,26 +400,29 @@ function classifyFinding(finding, { home, interruptions, symlinkedPaths, mcpPath
   }
 
   // Rule 4: execution-class — surface executionClass !== "inert".
+  // User-facing message avoids the internal "executionClass" token (G7).
   if (surface.executionClass && surface.executionClass !== "inert") {
     return {
       refuse: true,
       reason: "execution-class",
-      message: `Surface executionClass is "${surface.executionClass}"; clean only acts on inert surfaces`
+      message: `Surface at ${targetPath} is executable or active; clean only acts on inert surfaces`
     };
   }
 
   // Rule 5: rollback-class — surface rollbackClass === "not-applicable".
+  // User-facing message avoids the internal "rollbackClass" token (G7).
   if (surface.rollbackClass === "not-applicable") {
     return {
       refuse: true,
       reason: "rollback-class",
-      message: `Surface rollbackClass is "not-applicable"; clean requires reversible operations`
+      message: `Surface at ${targetPath} is not reversible; clean requires reversible operations`
     };
   }
 
   // Rule 6: owner — surface ownerClass not in {claude-managed, user-owned}.
   // Phase 10 exception: housekeeper.stale_lock cleans housekeeper's OWN lockfile,
   // so housekeeper-owned is the correct owner for the only path it acts on.
+  // User-facing message avoids the internal "ownerClass" token (G7).
   const allowedOwners = new Set(["claude-managed", "user-owned"]);
   const housekeeperSelfCleanup =
     id === "housekeeper.stale_lock" && surface.ownerClass === "housekeeper-owned";
@@ -389,7 +430,7 @@ function classifyFinding(finding, { home, interruptions, symlinkedPaths, mcpPath
     return {
       refuse: true,
       reason: "owner",
-      message: `Surface ownerClass is "${surface.ownerClass}"; clean only acts on claude-managed or user-owned surfaces`
+      message: `Surface at ${targetPath} is owned by Claude or plugin internals; clean only acts on claude-managed or user-owned surfaces`
     };
   }
 
@@ -594,6 +635,7 @@ export async function composeCleanPlan(home, options = {}) {
         targetPath: finding.targetPath || "",
         detectorId: finding.id,
         message: verdict.message || verdict.reason,
+        nextStep: nextStepFor(verdict.reason),
         exitCode: 2
       });
       continue;
@@ -655,6 +697,7 @@ export async function composeCleanPlan(home, options = {}) {
         targetPath: op.targetPath,
         detectorId: op.detectorId,
         message: "v0.2 cleans one finding per invocation; re-run clean to address this one",
+        nextStep: `Re-run \`clean --confirm --yes --target=${op.detectorId} --path=${op.targetPath}\` to address the remaining findings.`,
         exitCode: 2
       });
     }
