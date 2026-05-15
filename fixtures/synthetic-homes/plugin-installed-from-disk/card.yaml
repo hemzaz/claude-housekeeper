@@ -1,0 +1,43 @@
+id: plugin-installed-from-disk
+purpose: |
+  Plugin installed from a local filesystem path (installSource: "local",
+  with no real marketplace remote behind it) must NOT be misclassified
+  as orphaned, duplicate, or stale. Pins the behavior that v0.2 detectors
+  treat such an install the same as any other plugin record — the cache
+  is referenced by the installed registry, so no hygiene findings fire.
+mode_expectations:
+  safe:
+    claim_level: observation
+    stance: inform
+surfaces:
+  - path: ~/.claude/plugins/installed_plugins.json
+    surfaceClass: claude-app-data
+    ownerClass: claude-managed
+    loadBearingClass: possibly-load-bearing
+    sensitivityClass: private-path
+    executionClass: inert
+    rollbackClass: snapshot-possible
+    scopeClass: in-scope
+  - path: ~/.claude/plugins/cache/local/my-local-tool/1.0.0
+    surfaceClass: claude-app-data
+    ownerClass: claude-managed
+    loadBearingClass: possibly-load-bearing
+    sensitivityClass: private-path
+    executionClass: inert
+    rollbackClass: snapshot-possible
+    scopeClass: in-scope
+evidence:
+  structural:
+    - installed registry parsed
+    - cache version directory is referenced by the installed registry
+    - plugin cache contains 1 version directory
+finding:
+  class: orientation
+  stance: inform
+allowed_next_step: none
+blocked_actions: []
+report_expectations:
+  - primary is plugin.cache_size
+  - no plugin.expected_orphan finding
+  - no plugin.cache_unreferenced finding
+  - no plugin.duplicate_registration finding
