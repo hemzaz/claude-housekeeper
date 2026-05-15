@@ -799,7 +799,13 @@ function detectInterruptedOperation(context) {
   }
   if (manifests.length === 0) return null;
   const first = manifests[0];
-  const recoveryStep = first.status === "snapshot_taken"
+  // G16: pre-apply statuses (planned, snapshot_taken) route to `--abort`;
+  // applied/verified-failure statuses route to plain rollback. Legacy
+  // manifests are coerced to `planned` for display and routed to `--abort`
+  // — if the on-disk status is something else, abortRollbackOperation will
+  // refuse cleanly and the user is told to use `rollback <id>` instead.
+  const preApply = first.status === "snapshot_taken" || first.status === "planned";
+  const recoveryStep = preApply
     ? `rollback ${first.opId} --abort`
     : `rollback ${first.opId}`;
   const structuralEvidence = first.legacy
