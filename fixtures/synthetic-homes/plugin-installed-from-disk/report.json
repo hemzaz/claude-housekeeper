@@ -1,0 +1,54 @@
+{
+  "schemaVersion": "0.1",
+  "mode": "safe",
+  "home": "<home>",
+  "filesChanged": false,
+  "primary": "plugin.cache_size",
+  "stanceSummary": {
+    "inform": 1,
+    "watch": 0,
+    "review": 0,
+    "probe": 0,
+    "protect": 0,
+    "prepare": 0,
+    "repair": 0,
+    "block": 0
+  },
+  "findings": [
+    {
+      "id": "plugin.cache_size",
+      "class": "orientation",
+      "claimLevel": "observation",
+      "stance": "inform",
+      "summary": "plugin cache uses 121 B across 1 version directories",
+      "surface": {
+        "surfaceClass": "claude-app-data",
+        "ownerClass": "claude-managed",
+        "loadBearingClass": "possibly-load-bearing",
+        "sensitivityClass": "private-path",
+        "executionClass": "inert",
+        "rollbackClass": "snapshot-possible",
+        "scopeClass": "in-scope",
+        "confidence": "medium",
+        "limits": ["safe-mode-no-loader-key"]
+      },
+      "evidence": {
+        "structural": [
+          "plugin cache contains 1 version directories",
+          "total size 121 B",
+          "largest: local/my-local-tool (121 B across 1 version)"
+        ],
+        "loader": [],
+        "behavioral": [],
+        "ownership": [],
+        "freshness": [],
+        "reversibility": [],
+        "missing": []
+      },
+      "nextAllowedStep": "none",
+      "blockedActions": []
+    }
+  ],
+  "boundaries": [],
+  "degraded": []
+}
