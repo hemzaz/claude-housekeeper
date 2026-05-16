@@ -263,28 +263,28 @@ Status legend:
 - **never** — informational or judgment-laden by design; will not
   become cleanable. Surface only.
 
-| Detector id | Status in v0.2.0 |
-|---|---|
-| `settings.invalid_json` | planned |
-| `settings.hook_path_dangling` | planned |
-| `settings.hook_command_shell_ambiguous` | planned |
-| `settings.mcp_command_missing` | planned |
-| `plugin.expected_orphan` | never (locked decision Q-USER-3) |
-| `plugin.cache_unreferenced` | **cleanable** |
-| `plugin.cache_referenced_by_hook` (v0.2.0-beta) | never (protected by hook reference) |
-| `plugin.duplicate_registration` | never (which duplicate to keep is a judgment call) |
-| `plugin.cache_size` | never (size is a signal, not a verdict) |
-| `registry.local_skill_shadow` | planned |
-| `registry.local_command_identical` | **cleanable** (v0.2.0-beta.1) |
-| `registry.local_command_diverged` | never (intent-laden) |
-| `registry.broken_frontmatter` | planned |
-| `housekeeper.interrupted_operation` | recovery via `rollback <id>` or `rollback --abort <id>` |
-| `housekeeper.config_invalid` | planned |
-| `housekeeper.operations_unreadable` | never (informational) |
-| `housekeeper.stale_lock` (v0.2.0-beta) | **cleanable** (v0.2.0-beta.1) |
-| `home.not_found` | never (informational) |
-| `home.scan_budget_hit` | never (informational) |
-| `home.clean` | never (meta-detector; informational) |
+| Detector id | Status in v0.2.0 | Hardenable in v0.3.0 |
+|---|---|---|
+| `settings.invalid_json` | planned | **candidate** (surfaces `settings-shape-unknown` refusal — design §2.1) |
+| `settings.hook_path_dangling` | planned | **hardenable** (T-300) |
+| `settings.hook_command_shell_ambiguous` | planned | no |
+| `settings.mcp_command_missing` | planned | **hardenable** (T-301) |
+| `plugin.expected_orphan` | never (locked decision Q-USER-3) | no |
+| `plugin.cache_unreferenced` | **cleanable** | no |
+| `plugin.cache_referenced_by_hook` (v0.2.0-beta) | never (protected by hook reference) | no |
+| `plugin.duplicate_registration` | never (which duplicate to keep is a judgment call) | no |
+| `plugin.cache_size` | never (size is a signal, not a verdict) | no |
+| `registry.local_skill_shadow` | planned | no |
+| `registry.local_command_identical` | **cleanable** (v0.2.0-beta.1) | no |
+| `registry.local_command_diverged` | never (intent-laden) | no |
+| `registry.broken_frontmatter` | planned | no |
+| `housekeeper.interrupted_operation` | recovery via `rollback <id>` or `rollback --abort <id>` | no |
+| `housekeeper.config_invalid` | planned | no |
+| `housekeeper.operations_unreadable` | never (informational) | no |
+| `housekeeper.stale_lock` (v0.2.0-beta) | **cleanable** (v0.2.0-beta.1) | no |
+| `home.not_found` | never (informational) | no |
+| `home.scan_budget_hit` | never (informational) | no |
+| `home.clean` | never (meta-detector; informational) | no |
 
 Hygiene and state findings (large logs, zombie state, corrupt backups,
 drift directories, file-history age) are deferred alongside the

@@ -91,11 +91,25 @@ test("compose refusal: no-finding-for-target when detector emits no findings", a
 
 test("compose refusal: no-mutation-mapping-in-v0.3 for non-hardenable detector", async () => {
   const home = makeSyntheticHome();
-  const { settingsPath } = seedDanglingHookSettings(home);
-  // No __overrideHardenable → detector is NOT in the v0.3 set.
+  // Seed a shell-ambiguous hook command (still references plugins/cache so the
+  // detector fires) — settings.hook_command_shell_ambiguous is NOT in the v0.3
+  // hardenable set per design §3.4. The shared classifier would normally
+  // refuse it with execution-class because the detector's surface declares
+  // executionClass: "shell-expansion-risk"; widening allowedExecutionClasses
+  // here isolates the no-mutation-mapping rule (the one this test pins).
+  const settingsPath = path.join(home, "settings.json");
+  writeFileSync(settingsPath, JSON.stringify({
+    hooks: {
+      PreToolUse: [{
+        matcher: "Bash",
+        hooks: [{ type: "command", command: "$HOME/plugins/cache/x/y/1/h.sh" }]
+      }]
+    }
+  }, null, 2) + "\n");
   const plan = await composeHardenPlan(home, {
-    target: "settings.hook_path_dangling",
-    path: settingsPath
+    target: "settings.hook_command_shell_ambiguous",
+    path: settingsPath,
+    allowedExecutionClasses: ["inert", "known-execution-context", "shell-expansion-risk"]
   });
   assert.equal(plan.operations.length, 0);
   assert.equal(plan.refused.length, 1);
@@ -382,11 +396,23 @@ test("executeHardenPlan: stale lockfile → proceeds and overwrites", async () =
 
 test("G7 nextStep: every harden refusal carries a non-empty nextStep", async () => {
   const home = makeSyntheticHome();
-  const { settingsPath } = seedDanglingHookSettings(home);
-  // Use a non-hardenable detector to fire no-mutation-mapping-in-v0.3.
+  // Seed a shell-ambiguous hook so settings.hook_command_shell_ambiguous fires
+  // (not in v0.3 hardenable set per design §3.4) — guarantees the
+  // no-mutation-mapping-in-v0.3 refusal path is exercised. allowedExecutionClasses
+  // is widened so execution-class doesn't pre-empt the rule under test.
+  const settingsPath = path.join(home, "settings.json");
+  writeFileSync(settingsPath, JSON.stringify({
+    hooks: {
+      PreToolUse: [{
+        matcher: "Bash",
+        hooks: [{ type: "command", command: "$HOME/plugins/cache/x/y/1/h.sh" }]
+      }]
+    }
+  }, null, 2) + "\n");
   const plan = await composeHardenPlan(home, {
-    target: "settings.hook_path_dangling",
-    path: settingsPath
+    target: "settings.hook_command_shell_ambiguous",
+    path: settingsPath,
+    allowedExecutionClasses: ["inert", "known-execution-context", "shell-expansion-risk"]
   });
   assert.ok(plan.refused.length > 0);
   for (const r of plan.refused) {
