@@ -513,6 +513,62 @@ test("G7 nextStep: protected-path refusal hints at editing doNotTouch", async ()
   assert.match(r.nextStep, /doNotTouch/);
 });
 
+// ── T-099: allowedExecutionClasses parameter ─────────────────────────────────
+//
+// Forward-looking refactor (v0.3 prereq). v0.3 `runHarden` will pass
+// `["inert", "known-execution-context"]` so settings.json rewrites bypass
+// rule 4. `runClean` keeps the default (`["inert"]`) and behaves identically
+// to v0.2. The test fires a real non-inert finding —
+// `settings.hook_command_shell_ambiguous` carries
+// `executionClass: "shell-expansion-risk"` — and asserts:
+//   1. default opts → refused with reason `execution-class` (current v0.2 semantics)
+//   2. expanded set including the finding's class → rule 4 no longer fires
+//
+// Per docs/design/v0.3-design.md §4.2 and v0.3-architect-memo.md §6.3.
+test("T-099 composeCleanPlan: allowedExecutionClasses widens rule 4", async () => {
+  const home = makeSyntheticHome();
+  // Trigger settings.hook_command_shell_ambiguous: a hook command that uses
+  // shell expansion ($VAR) AND references plugins/cache.
+  writeFileSync(path.join(home, "settings.json"), JSON.stringify({
+    hooks: {
+      PostToolUse: [{
+        matcher: "Bash",
+        hooks: [{ type: "command", command: "node ${PLUGIN_HOME}/plugins/cache/x/run.js" }]
+      }]
+    }
+  }) + "\n");
+
+  // Default opts: rule 4 fires because the finding's executionClass is
+  // "shell-expansion-risk" and the default allowed set is {"inert"}.
+  const defaultPlan = await composeCleanPlan(home, {
+    target: "settings.hook_command_shell_ambiguous"
+  });
+  const execClassRefusals = defaultPlan.refused.filter(
+    (r) => r.reason === "execution-class"
+  );
+  assert.ok(
+    execClassRefusals.length > 0,
+    `expected an execution-class refusal under default opts; got: ${JSON.stringify(defaultPlan.refused)}`
+  );
+
+  // Widened opts: include "shell-expansion-risk" so rule 4 no longer matches.
+  // The detector still isn't in CLEANABLE_DETECTORS_V02, so a downstream
+  // refusal (no-mutation-mapping-in-v0.2) fires — but rule 4 must NOT fire.
+  // The forward-looking value "known-execution-context" is also passed to
+  // exercise the parameter shape v0.3 harden will use.
+  const widenedPlan = await composeCleanPlan(home, {
+    target: "settings.hook_command_shell_ambiguous",
+    allowedExecutionClasses: ["inert", "shell-expansion-risk", "known-execution-context"]
+  });
+  const widenedExecClass = widenedPlan.refused.filter(
+    (r) => r.reason === "execution-class"
+  );
+  assert.equal(
+    widenedExecClass.length, 0,
+    `rule 4 should not fire when executionClass is in the allowed set; got: ${JSON.stringify(widenedPlan.refused)}`
+  );
+});
+
 test("G7 nextStep: owner refusal message and nextStep do not contain literal 'ownerClass'", async () => {
   // Refusal text for rules 4/5/6 was reworded to drop "ownerClass",
   // "executionClass", and "rollbackClass" tokens. Exercise via a no-mutation

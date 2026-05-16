@@ -355,9 +355,18 @@ function nextStepFor(reason) {
   return NEXT_STEP_BY_REASON[reason] || "";
 }
 
+// ── allowedExecutionClasses default (T-099) ───────────────────────────────────
+// `runClean` calls composeCleanPlan with the default — only "inert" surfaces
+// pass rule 4. v0.3 `runHarden` will pass `["inert", "known-execution-context"]`
+// so settings.json (a non-inert, known-load-bearing config surface) can be
+// rewritten. The set is exposed as a parameter so the classifier stays the
+// single source of truth for refusal semantics across both commands.
+// See docs/design/v0.3-design.md §4.2 and v0.3-architect-memo.md §6.3.
+const DEFAULT_ALLOWED_EXECUTION_CLASSES = Object.freeze(["inert"]);
+
 // ── 12-rule classifier (synchronous; async pre-checks done before this call) ─
 
-function classifyFinding(finding, { home, interruptions, symlinkedPaths, mcpPaths, refByHookPaths, doNotTouchRules, freshLockPaths, driftedLocalCommandPaths }) {
+function classifyFinding(finding, { home, interruptions, symlinkedPaths, mcpPaths, refByHookPaths, doNotTouchRules, freshLockPaths, driftedLocalCommandPaths, allowedExecutionClasses }) {
   const id = finding.id;
   const targetPath = finding.targetPath || "";
   const surface = finding.surface || {};
@@ -399,9 +408,12 @@ function classifyFinding(finding, { home, interruptions, symlinkedPaths, mcpPath
     };
   }
 
-  // Rule 4: execution-class — surface executionClass !== "inert".
+  // Rule 4: execution-class — surface executionClass not in the allowed set.
+  // The allowed set is a parameter (T-099) so v0.3 `runHarden` can widen it to
+  // include `known-execution-context` for settings rewrites. Default is `inert`
+  // only, which matches v0.2 `runClean` semantics exactly.
   // User-facing message avoids the internal "executionClass" token (G7).
-  if (surface.executionClass && surface.executionClass !== "inert") {
+  if (surface.executionClass && !allowedExecutionClasses.has(surface.executionClass)) {
     return {
       refuse: true,
       reason: "execution-class",
@@ -521,12 +533,17 @@ function classifyFinding(finding, { home, interruptions, symlinkedPaths, mcpPath
  * assembleReport and lstat/readFile calls needed by the classifier.
  *
  * Required options: target (detector id), path (absolute path).
- * Optional: mode (defaults to "safe").
+ * Optional: mode (defaults to "safe"),
+ *           allowedExecutionClasses (defaults to ["inert"]; T-099 hook for
+ *           v0.3 harden which passes ["inert", "known-execution-context"]).
  */
 export async function composeCleanPlan(home, options = {}) {
   const targetDetectorId = options.target || "";
   const targetPath = options.path || "";
   const mode = options.mode || "safe";
+  const allowedExecutionClasses = new Set(
+    options.allowedExecutionClasses || DEFAULT_ALLOWED_EXECUTION_CLASSES
+  );
   const composedAt = new Date().toISOString();
 
   // Q-USER-2: always re-run assembleReport to guarantee freshness.
@@ -625,7 +642,8 @@ export async function composeCleanPlan(home, options = {}) {
       refByHookPaths,
       doNotTouchRules,
       freshLockPaths,
-      driftedLocalCommandPaths
+      driftedLocalCommandPaths,
+      allowedExecutionClasses
     });
 
     if (verdict.refuse) {
