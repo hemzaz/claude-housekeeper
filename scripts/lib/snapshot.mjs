@@ -20,6 +20,7 @@ import { existsSync } from "node:fs";
 import { join, basename, dirname } from "node:path";
 import os from "node:os";
 import { loadConfig, pathMatchesProtection } from "./policy.mjs";
+import { hasJsonComments } from "./audit.mjs";
 
 // ── Budget constants (T-603) ──────────────────────────────────────────────────
 
@@ -667,19 +668,13 @@ export class PreApplyRefusal extends Error {
   }
 }
 
-/**
- * hasJsoncComments(source) — placeholder for the lex-aware tokenizer scan
- * (T-101, owned by Team 2 in audit.mjs). Until that helper lands, this stub
- * always returns false, so a JSON.parse SyntaxError will surface as
- * `settings-shape-unknown` rather than `settings-jsonc-detected`. The wiring
- * point stays explicit so Team 2's exported helper can drop in with a single
- * import swap.
- *
- * TODO(T-101): replace with import from audit.mjs.
- */
-function hasJsoncComments(_source) {
-  return false;
-}
+// hasJsoncComments — alias for the lex-aware tokenizer scan imported at top
+// of file from audit.mjs (T-101 / Team 2). Per the design ruling (C4), strict
+// JSON.parse runs first; on SyntaxError we use this to distinguish
+// `settings-jsonc-detected` from `settings-shape-unknown`. The audit-side
+// helper is the single source of truth — both detector and preApply hook
+// agree on what counts as JSONC.
+const hasJsoncComments = hasJsonComments;
 
 /**
  * applyPatch(obj, patch) — minimal patch DSL for v0.3.
