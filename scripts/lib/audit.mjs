@@ -237,6 +237,14 @@ function buildFinding(raw, { home, mode, policyMatchesFor }) {
   const probe = pickProbeMetadata(finding);
   if (probe) finding.proposedProbe = probe;
 
+  // T-300..T-302 (Q4 ruling, design §2.4): per-detector candidacy flag.
+  // The detector self-declares `hardenable: true` on its DetectorOutput;
+  // propagate to the rendered finding so audit consumers (CLI, JSON renderer,
+  // README "Current Checks" table) can show candidacy. NOT a will-act promise —
+  // compose-time refusals can still fire downstream.
+  if (raw.hardenable === true) finding.hardenable = true;
+  if (raw.cleanable === true) finding.cleanable = true;
+
   return finding;
 }
 
@@ -413,7 +421,11 @@ function detectSettingsInvalidJson(context) {
     missingKeys: ["valid settings required before hook or MCP inference"],
     summary: "settings.json is invalid JSON",
     nextAllowedStep: "generate patch preview or edit manually",
-    blockedActions: ["dependent hook and MCP inference"]
+    blockedActions: ["dependent hook and MCP inference"],
+    // T-302: candidate-only. harden routes through preApply, which refuses
+    // with settings-shape-unknown because strict JSON.parse fails before any
+    // patch can be applied (design §3.4).
+    hardenable: true
   };
 }
 
@@ -522,7 +534,11 @@ function detectHookPathDangling(context) {
         missingKeys: ["live /hooks view", "hook verification"],
         summary: "settings hook references a missing direct executable path",
         nextAllowedStep: "generate a patch preview only",
-        blockedActions: ["mutate settings", "delete plugin cache", "claim fixed"]
+        blockedActions: ["mutate settings", "delete plugin cache", "claim fixed"],
+        // T-300: hardenable. Patch builder in scripts/lib/harden-plan.mjs
+        // removes hooks.<event>[].hooks[] entries whose command references a
+        // missing plugin-cache path (design §3.4).
+        hardenable: true
       });
     }
   }
@@ -591,7 +607,11 @@ function detectMcpCommandMissing(context) {
       missingKeys: ["MCP server start verification"],
       summary: `MCP server "${name}" references a missing absolute command path`,
       nextAllowedStep: "generate a patch preview; do not start the server",
-      blockedActions: ["start MCP server", "claim fixed"]
+      blockedActions: ["start MCP server", "claim fixed"],
+      // T-301: hardenable. Patch builder in scripts/lib/harden-plan.mjs
+      // removes the mcpServers.<name> entry whose command path is missing
+      // (design §3.4).
+      hardenable: true
     });
   }
   return out;

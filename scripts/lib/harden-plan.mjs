@@ -14,8 +14,8 @@
 
 import { createHash } from "node:crypto";
 import { open, unlink, mkdir, readFile, copyFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { join, dirname, sep as pathSep } from "node:path";
 import os from "node:os";
 import { assembleReport, hasJsonComments } from "./audit.mjs";
 import {
@@ -96,26 +96,53 @@ function nextStepFor(reason) {
   return NEXT_STEP_BY_REASON[reason] || "";
 }
 
-// ── v0.3 hardenable detector set (Phase 3 will promote; for now empty) ─────
+// ── v0.3 hardenable detector registry (T-300..T-302) ───────────────────────
 //
-// Phase 3 (T-300..T-302) promotes settings.hook_path_dangling and
-// settings.mcp_command_missing into this set. T-200 ships an empty set so the
-// pipeline + refusal classifier are exercised by tests without coupling them
-// to Phase 3 detector wiring. The classifier raises `no-mutation-mapping-in-v0.3`
-// for any detector not in this set — analogous to clean-plan's v0.2 set.
+// Each entry maps a detector id to a patch-builder `(finding) => patch`. The
+// builder reads the live settings.json at finding.targetPath, derives a
+// minimal patch that removes the broken entry (or, for invalid_json, returns
+// the identity sentinel that lets preApply refuse with settings-shape-unknown
+// per design §3.4 + Q1 ruling §2.1).
+//
+// Per design §3.4, builders are side-effect-free aside from a single sync
+// read of the target file. They must be deterministic for a given on-disk
+// state so the idempotency check in MUTATION_REGISTRY.preApply holds.
+//
+// The Map shape (rather than Set + side function) is per the user task brief:
+// "HARDENABLE_DETECTORS_V03 entry maps the detector id to a (finding) => patch
+// function that builds the settings-rewrite op payload".
 
-const HARDENABLE_DETECTORS_V03 = new Set([
-  // Filled by T-300..T-302 (Phase 3).
+const HARDENABLE_DETECTORS_V03 = new Map([
+  // T-300 — remove all hooks.<event>[].hooks[] entries whose command points
+  // at a missing plugin-cache path. A single `set` patch replacing the entire
+  // hooks tree is naturally idempotent (a second apply re-derives the same
+  // cleaned tree from the already-cleaned source).
+  ["settings.hook_path_dangling", buildHookPathDanglingPatch],
+  // T-301 — remove the mcpServers.<name> entry whose command path is missing.
+  // Same `set`-on-`["mcpServers"]` strategy as T-300 for the same idempotency
+  // reason.
+  ["settings.mcp_command_missing", buildMcpCommandMissingPatch],
+  // T-302 — NO patch. The detector self-flags hardenable: true so it appears
+  // in plan output as a candidate, but the identity-marker patch routes the
+  // preApply hook through strict JSON.parse which fails (the file is invalid
+  // JSON), surfacing settings-shape-unknown refusal per Q1 ruling.
+  ["settings.invalid_json", buildInvalidJsonSentinel]
 ]);
 
-// Test seam for Phase 2: lets the harden-plan test file exercise the happy
-// path before Phase 3 lands. Callers in production pass nothing here and the
-// set above is used as-is. Tests pass an explicit overrideHardenable array
-// containing the detector id they want to treat as hardenable. NOT a public
-// API — name is prefixed __ to discourage importers.
-function effectiveHardenableSet(overrideHardenable) {
-  if (!overrideHardenable) return HARDENABLE_DETECTORS_V03;
-  return new Set([...HARDENABLE_DETECTORS_V03, ...overrideHardenable]);
+// Test seam: callers may inject extra detector ids that should be treated as
+// hardenable for the scope of one compose call. Each injected id gets the
+// identity-marker patch (no real mutation; preApply's idempotency check still
+// runs but a remove-of-non-existent-key is a no-op). This preserves the Phase
+// 2 test contract for non-promoted detectors (e.g. settings.jsonc_detected).
+function effectiveHardenableRegistry(overrideHardenable) {
+  if (!overrideHardenable || overrideHardenable.length === 0) {
+    return HARDENABLE_DETECTORS_V03;
+  }
+  const merged = new Map(HARDENABLE_DETECTORS_V03);
+  for (const id of overrideHardenable) {
+    if (!merged.has(id)) merged.set(id, buildIdentityMarkerPatch);
+  }
+  return merged;
 }
 
 // ── SHA-256 of report findings for drift detection (parity with clean-plan) ─
@@ -131,23 +158,145 @@ function hashReport(report) {
   return createHash("sha256").update(stable).digest("hex");
 }
 
-// ── Patch generator stub ───────────────────────────────────────────────────
+// ── Patch builders (T-300..T-302) ──────────────────────────────────────────
 //
-// Phase 3 (T-300..T-302) implements per-detector patch generation. T-200 ships
-// a no-op identity patch so the pipeline can be exercised end-to-end without
-// detector promotion. The patch DSL is defined in snapshot.mjs applyPatch.
-// When a detector lands in HARDENABLE_DETECTORS_V03, this function must be
-// extended to compose a real patch for that detector id.
+// Each builder is invoked at compose time and receives the audit finding for a
+// single hardenable detector. Builders read the live settings.json via a sync
+// read (file size is small, ~KiB; no async benefit), parse JSON, compute the
+// cleaned subtree, and return a single { op, path, value? } patch matching the
+// DSL in snapshot.mjs applyPatch.
+//
+// If a builder cannot construct a clean patch (file unreadable, JSON malformed,
+// etc.) it returns the identity-marker patch — preApply will then surface the
+// real underlying refusal (settings-shape-unknown, etc.) consistently.
 
-function generatePatchForFinding(finding) {
-  // Identity patch: a remove of a non-existent key is a no-op (per
-  // snapshot.mjs applyPatch contract). Reserved key
-  // "__housekeeper_harden_identity__" is never present in a real settings.json,
-  // so the apply is observable as identity. Phase 3 replaces this with real
-  // per-detector patch generation; until then no detector reaches the
-  // patch-generation branch because HARDENABLE_DETECTORS_V03 is empty.
-  void finding;
+function generatePatchForFinding(finding, registry) {
+  const builder = registry.get(finding.id);
+  if (!builder) return buildIdentityMarkerPatch();
+  try {
+    return builder(finding);
+  } catch {
+    // Unexpected builder failure → fall back to identity. preApply re-runs
+    // strict JSON parsing and surfaces the canonical refusal.
+    return buildIdentityMarkerPatch();
+  }
+}
+
+// Identity-marker patch: a remove of a reserved key that is never present in a
+// real settings.json. Apply is observable as identity; preApply's idempotency
+// check passes (remove-of-missing is a no-op repeated).
+function buildIdentityMarkerPatch() {
   return { op: "remove", path: ["__housekeeper_harden_identity__"] };
+}
+
+// T-300 — settings.hook_path_dangling
+//
+// Returns a `set` patch on ["hooks"] whose value is the parsed hooks tree with
+// every hooks.<event>[i].hooks[j] entry removed if its command references a
+// missing absolute plugin-cache path. The shell-ambiguous check matches the
+// audit detector exactly so the two reasoning paths stay aligned.
+function buildHookPathDanglingPatch(finding) {
+  const parsed = parseSettingsSync(finding.targetPath);
+  if (!parsed || typeof parsed !== "object" || !parsed.hooks) {
+    return buildIdentityMarkerPatch();
+  }
+  const cleanedHooks = pruneDanglingHooks(parsed.hooks);
+  return { op: "set", path: ["hooks"], value: cleanedHooks };
+}
+
+// T-301 — settings.mcp_command_missing
+//
+// Returns a `set` patch on ["mcpServers"] whose value is the parsed mcpServers
+// object minus any server whose .command is an absolute path that does not
+// exist on disk. Mirrors detectMcpCommandMissing's existsSync semantics so the
+// patch removes exactly the set of entries audit flagged.
+function buildMcpCommandMissingPatch(finding) {
+  const parsed = parseSettingsSync(finding.targetPath);
+  if (!parsed || typeof parsed !== "object" || !parsed.mcpServers) {
+    return buildIdentityMarkerPatch();
+  }
+  const cleanedServers = {};
+  for (const [name, server] of Object.entries(parsed.mcpServers)) {
+    if (!server || typeof server !== "object") continue;
+    const command = typeof server.command === "string" ? server.command : "";
+    if (command && command.startsWith("/") && !existsSync(command)) continue;
+    cleanedServers[name] = server;
+  }
+  return { op: "set", path: ["mcpServers"], value: cleanedServers };
+}
+
+// T-302 — settings.invalid_json
+//
+// NO patch. Returns the identity sentinel. preApply runs strict JSON.parse
+// first; it will fail on the broken file and (since no JSONC comments exist
+// per the two-phase rule in audit.detectSettingsInvalidJson) emit a
+// PreApplyRefusal with reason "settings-shape-unknown" — exactly the Q1
+// outcome required by design §2.1.
+function buildInvalidJsonSentinel(finding) {
+  void finding;
+  return buildIdentityMarkerPatch();
+}
+
+// Internal — sync settings.json parse used by the patch builders. Returns the
+// parsed object or null. Never throws; on any error the builder falls back to
+// the identity sentinel and preApply surfaces the real refusal.
+function parseSettingsSync(filePath) {
+  try {
+    const raw = readFileSync(filePath, "utf8");
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+// Internal — walk the hooks tree and drop any { command } leaf whose command
+// references an absolute path inside a plugin cache subtree that does not
+// exist on disk. Mirrors detectHookPathDangling's filter exactly (shell-
+// ambiguous commands are left in place — the detector for those is a separate
+// stance and not hardenable in v0.3). Pure: returns a new tree, never mutates
+// the input.
+function pruneDanglingHooks(hooksTree) {
+  if (Array.isArray(hooksTree)) {
+    const out = [];
+    for (const item of hooksTree) {
+      const child = pruneDanglingHooks(item);
+      if (child !== null) out.push(child);
+    }
+    return out;
+  }
+  if (hooksTree && typeof hooksTree === "object") {
+    // A leaf entry shaped { type: "command", command: "<abs path>" }.
+    if (typeof hooksTree.command === "string") {
+      if (isHookCommandDangling(hooksTree.command)) return null;
+      return { ...hooksTree };
+    }
+    const out = {};
+    for (const [key, child] of Object.entries(hooksTree)) {
+      const pruned = pruneDanglingHooks(child);
+      if (pruned !== null) out[key] = pruned;
+    }
+    return out;
+  }
+  return hooksTree;
+}
+
+// Match audit.mjs looksShellAmbiguous + extractAbsolutePaths +
+// isPluginCacheCommand semantics. A hook command is "dangling" iff it contains
+// at least one absolute plugin-cache path that does not exist AND the command
+// is not shell-ambiguous (which we cannot reason about without execution).
+function isHookCommandDangling(command) {
+  if (looksShellAmbiguousLocal(command)) return false;
+  const matches = command.match(/(?:['"])?(\/[^\s'"`|;&)]+)/g) || [];
+  for (const m of matches) {
+    const candidate = m.replace(/^['"]|['"]$/g, "");
+    if (!candidate.includes(`${pathSep}plugins${pathSep}cache${pathSep}`)) continue;
+    if (!existsSync(candidate)) return true;
+  }
+  return false;
+}
+
+function looksShellAmbiguousLocal(command) {
+  return /\$\{?[A-Z_]/.test(command) || /`[^`]+`/.test(command) || /\$\([^)]+\)/.test(command);
 }
 
 // ── NFS/SMB detection (design §3.3 settings-network-filesystem) ─────────────
@@ -258,7 +407,7 @@ export async function composeHardenPlan(home, options = {}) {
   }
 
   // Harden-specific: HARDENABLE_DETECTORS_V03 gate.
-  const hardenable = effectiveHardenableSet(options.__overrideHardenable);
+  const hardenable = effectiveHardenableRegistry(options.__overrideHardenable);
   if (!hardenable.has(targetDetectorId)) {
     for (const f of candidates) {
       refused.push({
@@ -293,7 +442,7 @@ export async function composeHardenPlan(home, options = {}) {
       continue;
     }
 
-    const patch = generatePatchForFinding(finding);
+    const patch = generatePatchForFinding(finding, hardenable);
     const op = { kind: "settings-rewrite", targetPath: tp, patch };
 
     const preApplyResult = await handler.preApply(op);
