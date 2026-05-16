@@ -16,7 +16,8 @@ layout can change.
 
 The rows below record what `v0.2.0` is actually tested against on the CI
 matrix in `.github/workflows/ci.yml` plus the maintainer's development
-target.
+target. The v0.3.0 row below carries the same matrix forward and adds
+the surfaces v0.3 introduces.
 
 | Dimension | Tested entry | State | Notes |
 | --- | --- | --- | --- |
@@ -32,6 +33,27 @@ target.
 | Standalone CLI | local Node bin / `node scripts/claude-housekeeper.mjs` | supported | recovery surface; works without Claude Code installed |
 | MCP config | structural parse only | degraded | startup requires consent |
 | Hooks | structural parse only | degraded | execution requires consent |
+
+## v0.3.0 surface
+
+`v0.3.0` carries the v0.2.0 matrix forward unchanged. The rows below
+record the v0.3-specific surfaces. Atomic-rename guarantees and the
+new `settings-network-filesystem` refusal class are documented in
+[`docs/threat-model.md`](./threat-model.md) §8.
+
+| Dimension | Tested entry | State | Notes |
+| --- | --- | --- | --- |
+| `harden --confirm --yes` | `settings.hook_path_dangling`, `settings.mcp_command_missing` fixtures + CLI tests | supported | rewrites `settings.json` through the `settings-rewrite` mutation kind under the snapshot contract |
+| `harden` on `settings.invalid_json` | fixture + refusal test | supported | refuses with `settings-shape-unknown` per Q1 ruling — no JSON repair |
+| `clean --batch=<n>` | `test/clean-batch.test.mjs` (17 tests) | supported | aggregates `file-unlink` operations; default cap 10, max 50; manifest-atomic per Q3 |
+| `clean --batch` over `settings-rewrite` | refusal test | supported | refuses with `settings-rewrite-not-batchable` per C6 ruling |
+| Two-phase JSONC detection | `test/audit.test.mjs` + `fixtures/synthetic-homes/jsonc-settings/` | supported | strict `JSON.parse`, then lex-aware comment scan; emits `settings.jsonc_detected` (disjoint from `settings.invalid_json`) |
+| JSONC-bearing settings under `harden` | refusal test | supported | refuses with `settings-jsonc-detected`; deferred to v0.4 per Q2 ruling |
+| Atomic rename — APFS (macOS) | `macos-latest` CI matrix | supported | POSIX `rename(2)` atomic on same-volume; see threat-model §8 |
+| Atomic rename — ext4 (Linux) | `ubuntu-latest` CI matrix | supported | POSIX `rename(2)` atomic on same-volume; see threat-model §8 |
+| Atomic rename — NFS/SMB | n/a — refused | unsupported | `settings-network-filesystem` refusal class per C10 — no POSIX atomic-rename guarantee |
+| CI `version-pin` job | `.github/workflows/ci.yml` | supported | asserts `docs/index.html` contains `v$(jq -r .version package.json)`; closes G4 release-readiness gap |
+| Q1–Q5 outcomes | recorded | n/a | Q1 refuse (`settings-shape-unknown`); Q2 refuse v0.3 (`settings-jsonc-detected`); Q3 manifest-atomic no auto-rollback; Q4 per-detector `hardenable` flag; Q5 CI check |
 
 ## What Housekeeper does NOT depend on
 

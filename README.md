@@ -14,10 +14,13 @@ with stance, evidence, missing keys, and boundaries, and understand what
 is happening before Claude starts failing mid-session.
 
 `diagnose`, `plan`, and `verify` are read-only. `clean --confirm --yes`
-can remove one outside-grace plugin cache version after creating a
-Housekeeper-owned snapshot, and `rollback <id> --confirm --yes` restores
-that operation from the snapshot. `harden` is still planned and refuses
-mutation.
+removes outside-grace plugin cache versions, stale concurrency locks, or
+duplicate local commands after creating a Housekeeper-owned snapshot;
+`clean --batch=<n>` aggregates multiple `file-unlink` operations under
+one manifest (v0.3.0). `harden --confirm --yes` rewrites
+`settings.json` under the same snapshot contract to remove dangling
+hook paths or missing MCP commands (v0.3.0). `rollback <id> --confirm
+--yes` restores any operation from its snapshot.
 
 ## Command Surface
 
@@ -32,19 +35,32 @@ claude-housekeeper clean --confirm --yes \
     --target=plugin.cache_unreferenced \
     --path=<absolute path>                         # mutates a single plugin cache
                                                    # version (v0.2.0-beta.1)
-claude-housekeeper harden                          # planned; refuses mutation
+claude-housekeeper clean --confirm --yes --batch=<n> \
+    --target=<id> --path=<path> \
+    --target=<id> --path=<path>                    # aggregates N file-unlink ops
+                                                   # under one manifest (v0.3.0)
+claude-housekeeper harden                          # dry-run plan view (v0.3.0)
+claude-housekeeper harden --confirm --yes \
+    --target=settings.hook_path_dangling \
+    --path=<absolute settings.json path>           # rewrites settings.json under
+                                                   # snapshot (v0.3.0)
 claude-housekeeper rollback <id> --dry-run         # shows restore plan
 claude-housekeeper rollback <id> --confirm --yes   # restores from snapshot
 ```
 
-Three detectors are cleanable in v0.2.0-beta.1: `plugin.cache_unreferenced`
+Three detectors are cleanable in v0.2.0: `plugin.cache_unreferenced`
 (plugin cache versions OUTSIDE the 7-day grace window),
 `housekeeper.stale_lock` (concurrency lockfile older than 30 min), and
 `registry.local_command_identical` (local command byte-identical to its
-plugin counterpart). Everything else routes to `refused[]` with a
-structured reason — see [`docs/design/clean-design.md`](docs/design/clean-design.md)
-for the full taxonomy and the "Current Checks" table below for the
-per-detector status.
+plugin counterpart). Three more become **hardenable** in v0.3.0:
+`settings.hook_path_dangling`, `settings.mcp_command_missing`, and
+`settings.invalid_json` (the last surfaces with a `harden` next-step but
+refuses on invocation per Q1 — see
+[`docs/migration-v0.2-to-v0.3.md`](docs/migration-v0.2-to-v0.3.md)).
+Everything else routes to `refused[]` with a structured reason — see
+[`docs/design/clean-design.md`](docs/design/clean-design.md) for the
+full taxonomy and the "Current Checks" table below for the per-detector
+status.
 
 Scopes:
 
@@ -191,10 +207,12 @@ Housekeeper follows these rules:
 5. Claude checkpointing is not Housekeeper rollback.
 6. Mutation requires Housekeeper-owned rollback proof.
 
-`diagnose`, `plan`, and `verify` never modify files. `clean --confirm --yes`
-and `rollback <id> --confirm --yes` are the only mutation paths in
-v0.2.0-beta.1; both require Housekeeper-owned manifests and rollback proof.
-`harden` remains visible but refuses mutation.
+`diagnose`, `plan`, and `verify` never modify files. `clean --confirm --yes`,
+`harden --confirm --yes`, and `rollback <id> --confirm --yes` are the only
+mutation paths in v0.3.0; all three require Housekeeper-owned manifests
+and rollback proof. `harden` further requires a `hardenable: true`
+detector and a successful `settings-rewrite.preApply` (idempotency,
+strict JSON, no JSONC comments).
 
 Future action planning will use stance vocabulary:
 
@@ -291,8 +309,9 @@ drift directories, file-history age) are deferred alongside the
 knowledge layer.
 
 See [`CHANGELOG.md`](CHANGELOG.md) for the full per-tag delta,
-[`docs/migration-v0.1-to-v0.2.md`](docs/migration-v0.1-to-v0.2.md) for
-the v0.1 → v0.2 upgrade guide, and [`docs/threat-model.md`](docs/threat-model.md)
+[`docs/migration-v0.1-to-v0.2.md`](docs/migration-v0.1-to-v0.2.md) and
+[`docs/migration-v0.2-to-v0.3.md`](docs/migration-v0.2-to-v0.3.md) for
+the upgrade guides, and [`docs/threat-model.md`](docs/threat-model.md)
 for the single-user trust boundaries that back the mutation surface.
 
 ## Roadmap
@@ -311,12 +330,13 @@ Shipped:
 - **v0.2.0-alpha.1: snapshot-backed `clean --confirm --yes` and `rollback <id> --confirm --yes`** for `plugin.cache_unreferenced` (outside-grace plugin cache versions). Includes atomic write-temp+rename+fsync snapshot protocol, per-operation budget (50 files / 10 MiB), per-detector safe-mode limits, concurrency lockfile, rollback dry-run plans, and operation manifests under `<home>/.claude/housekeeper/operations/`.
 - **v0.2.0-beta.1 (Phase 9):** interrupted-operation recovery. `rollback --abort <id>` cancels a `snapshot_taken`/`planned` operation; `SessionStart` hook surfaces non-terminal manifests; legacy pre-v0.2 manifests are detected and reported; audit findings include recovery hints (`rollback <id>` or `rollback --abort <id>`).
 - **v0.2.0-beta.1 (Phase 10):** broadened cleanable set with a `file-unlink` mutation kind. `housekeeper.stale_lock` and `registry.local_command_identical` join `plugin.cache_unreferenced` as cleanable detectors.
+- **v0.3.0:** `harden --confirm --yes` for guarded `settings.json` rewrite through a new `settings-rewrite` mutation kind. Three settings detectors (`settings.hook_path_dangling`, `settings.mcp_command_missing`, `settings.invalid_json`) promoted to **hardenable**. `clean --batch=<n>` aggregates multiple `file-unlink` operations under one manifest (manifest-atomic, no auto-rollback). Two-phase JSONC detection splits `settings.jsonc_detected` from `settings.invalid_json`. CI version-pin check. See the [v0.2 → v0.3 migration guide](docs/migration-v0.2-to-v0.3.md).
 
 Coming:
 
 - Local learning from false positives, protected paths, accepted plans, and rollback outcomes
-- More precise settings schema checks (`settings.invalid_json`, `settings.hook_path_dangling`, `settings.mcp_command_missing`)
-- `harden --confirm` (settings/hook patching) — v0.3
+- JSONC-aware `settings.json` rewrite (deferred to v0.4 per Q2 ruling)
+- Cross-kind batches that include `settings-rewrite` (deferred per C6 ruling)
 
 ## Known Limitations
 

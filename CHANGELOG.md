@@ -14,6 +14,100 @@ with two caveats documented in the design notes:
 
 _No changes yet._
 
+## [0.3.0] — 2026-05-17
+
+The v0.3 line. Introduces `harden --confirm --yes` for guarded
+settings.json rewrite, `clean --batch` for aggregating multiple
+findings under a single operation manifest, two-phase JSONC detection,
+and promotes three settings detectors from `planned` to **hardenable**.
+
+`diagnose`, `plan`, `verify`, `clean`, and `rollback` are unchanged.
+The v0.2 read-only and single-op mutation contracts hold byte-for-byte.
+
+### Added
+
+- **`harden --confirm --yes`** (#88, #92, T-200..T-204, T-400..T-403).
+  New mutation subcommand mirroring `clean`'s four-branch consent gate.
+  Routes through `composeHardenPlan → validateHardenPlan →
+  executeHardenPlan`, takes a snapshot, applies a `settings-rewrite`
+  patch, and verifies the result. Successful runs print a `RELOAD HINT`
+  block reminding the user to restart their Claude session — Claude
+  does not document hot-reload of `settings.json`. Same `--target=`,
+  `--path=`, `--dry-run`, `--json`, and `--timeout=<seconds>` surface
+  as `clean`. Rollback works through the existing `rollback <id>` flow.
+- **`settings-rewrite` mutation kind** (#86, T-100..T-104). Third
+  mutation kind in `MUTATION_REGISTRY` (after `dir-rmtree` and
+  `file-unlink`). Per-kind `preApply / apply / rollback` contract:
+  `preApply` runs strict `JSON.parse`, the JSONC tokenizer, applies
+  the patch in memory twice for idempotency, and validates the output
+  is still valid JSON before snapshotting. `apply` uses the existing
+  `atomicWrite` helper (write-temp + rename + fsync-parent). `rollback`
+  copies the snapshot tree back over the target.
+- **`clean --batch=<n>`** (#91, T-500..T-504). Aggregates multiple
+  `--target=`/`--path=` pairs under one operation manifest. Default
+  aggregate cap 10, max 50 (matches the per-op snapshot budget).
+  Manifest-atomic semantics per Q3 ruling: `status: verified` only
+  when every op verifies; on per-op failure the manifest stays at
+  `applied` with `partialApply: true` and `housekeeper.interrupted_operation`
+  surfaces it next session. `clean --batch` excludes `settings-rewrite`
+  operations by design (use `harden` instead). New refusal classes
+  `batch-exceeds-aggregate-budget`, `batch-pair-cap-exceeded`, and
+  `settings-rewrite-not-batchable`, each with a `nextStep`.
+- **Two-phase JSONC detection** (#87, T-101). When `settings.json`
+  fails strict `JSON.parse`, a lex-aware tokenizer scans for `//` or
+  `/*` outside string context. Comment-bearing inputs emit a new
+  `settings.jsonc_detected` finding at `inform` stance — they are not
+  broken, but Housekeeper cannot safely round-trip comments through
+  `settings-rewrite` in v0.3. Existing `settings.invalid_json` is now
+  disjoint from `settings.jsonc_detected`. Revisit deferred to v0.4.
+- **Three promoted detectors** (#90, T-300..T-303). The following
+  detectors carry `hardenable: true` on their `DetectorOutput` and are
+  acted on by `harden --confirm --yes`:
+  - `settings.hook_path_dangling` — patch removes every hook entry
+    whose command references a missing absolute plugin-cache path.
+  - `settings.mcp_command_missing` — patch removes every `mcpServers`
+    entry whose absolute command path is missing.
+  - `settings.invalid_json` — surfaces with `hardenable: true` so
+    `diagnose` suggests `harden`; the actual invocation refuses with
+    `settings-shape-unknown` per Q1 ruling.
+- **`hardenable` flag on `DetectorOutput`** (Q4 ruling). Detectors
+  self-declare candidacy; the README "Current Checks" table gains a
+  fourth column.
+- **CI `version-pin` job** (#85, T-604). New `.github/workflows/ci.yml`
+  job that asserts `docs/index.html` contains `v$(jq -r .version
+  package.json)`. Prevents the GA tag from shipping with a stale site
+  version pin. Closes the G4 release-readiness gap from v0.2.
+- **Schema/threat/versioning addenda** (#85, T-700..T-702).
+  - `docs/schema-stability.md` documents `settings-rewrite` alongside
+    `dir-rmtree` and `file-unlink` as a stable mutation kind. Manifest
+    `schemaVersion` stays at `"0.2"`.
+  - `docs/threat-model.md` §8 covers the settings-write surface:
+    atomic-rename guarantees on macOS APFS and Linux ext4, the new
+    `settings-network-filesystem` refusal class for NFS/SMB, the
+    bounded read-race window (Claude sees old or new, never partial),
+    and confirms the single-user-local trust boundary from v0.2 is
+    unchanged. Adds threat scenarios T9–T13.
+  - `docs/versioning-policy.md` §2.1 records that `settings-rewrite`,
+    `harden`, and `clean --batch` are additive — v0.3 minor, not v1.0.
+
+### Changed
+
+- **`composeCleanPlan` now accepts `allowedExecutionClasses`** (#83,
+  T-099). The 12-rule classifier's hardcoded `executionClass === "inert"`
+  check is promoted to a parameter. `runClean` continues to pass
+  `["inert"]` (no behavior change); `runHarden` passes `["inert",
+  "known-execution-context"]` so harden can act on non-inert config
+  surfaces. Without this refactor every harden invocation would refuse
+  with `execution-class` and v0.3 would ship a no-op.
+- **README "Current Checks" gains a fourth column** for hardenable
+  status. Three settings detectors marked **hardenable** in v0.3.0.
+- **`docs/index.html`** documents the v0.3 surface in the timeline.
+
+### Fixed
+
+- _No bug fixes in this release; v0.2.0 GA bug-fix backlog landed in_
+  _the 0.2.0 line._
+
 ## [0.2.0] — 2026-05-16
 
 GA release of the v0.2 line. Drops the `-beta` suffix after the GA-blocker
@@ -262,7 +356,8 @@ cache drift, and protected local state.
 - Do-not-touch rules are a hard boundary; protected findings are
   visible but non-actionable.
 
-[Unreleased]: https://github.com/hemzaz/claude-housekeeper/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/hemzaz/claude-housekeeper/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/hemzaz/claude-housekeeper/releases/tag/v0.3.0
 [0.2.0]: https://github.com/hemzaz/claude-housekeeper/releases/tag/v0.2.0
 [0.2.0-beta.1]: https://github.com/hemzaz/claude-housekeeper/releases/tag/v0.2.0-beta.1
 [0.2.0-alpha.1]: https://github.com/hemzaz/claude-housekeeper/releases/tag/v0.2.0-alpha.1
