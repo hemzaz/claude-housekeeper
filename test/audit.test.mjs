@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { assembleReport, auditClaudeHome } from "../scripts/lib/audit.mjs";
+import { assembleReport, auditClaudeHome, hasJsonComments } from "../scripts/lib/audit.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURES_ROOT = path.resolve(__dirname, "..", "fixtures", "synthetic-homes");
@@ -603,6 +603,67 @@ test("housekeeper.stale_lock handles malformed JSON lockfile", () => {
     f.evidence.structural.some((s) => s.includes("unreadable")),
     "evidence includes 'unreadable' note for malformed lockfile"
   );
+});
+
+// ---------- T-101: hasJsonComments tokenizer + settings.jsonc_detected ----------
+
+test("hasJsonComments: returns true for line comment", () => {
+  assert.equal(hasJsonComments(`{\n  // a comment\n  "a": 1\n}`), true);
+});
+
+test("hasJsonComments: returns true for block comment", () => {
+  assert.equal(hasJsonComments(`{\n  /* block */\n  "a": 1\n}`), true);
+});
+
+test("hasJsonComments: returns false for clean JSON", () => {
+  assert.equal(hasJsonComments(`{"a": 1, "b": [1, 2, 3]}`), false);
+});
+
+test("hasJsonComments: returns false when `//` appears inside a string value", () => {
+  // The slashes are inside a string and must NOT count as comments.
+  assert.equal(hasJsonComments(`{"url": "https://example.com/path"}`), false);
+});
+
+test("hasJsonComments: returns false when escaped quote precedes a slash", () => {
+  // \" inside a string keeps us in string context; the // after stays inert.
+  assert.equal(hasJsonComments(`{"k": "a \\"quoted\\" // not a comment"}`), false);
+});
+
+test("hasJsonComments: handles empty and tiny inputs without throwing", () => {
+  assert.equal(hasJsonComments(""), false);
+  assert.equal(hasJsonComments("/"), false);
+  assert.equal(hasJsonComments("/*"), true);
+  assert.equal(hasJsonComments("//"), true);
+});
+
+// T-101: when settings.json fails strict JSON.parse AND has comments, the
+// audit emits settings.jsonc_detected at inform stance — NOT settings.invalid_json.
+// Per docs/design/v0.3-design.md §2.2 (Q2 ruling).
+test("settings.jsonc_detected fires for commented settings.json", () => {
+  const home = mkdtempSync(path.join(tmpdir(), "claude-housekeeper-jsonc-"));
+  mkdirSync(path.join(home, "plugins"), { recursive: true });
+  writeFileSync(path.join(home, "settings.json"), `{\n  // hello\n  "k": 1\n}\n`);
+
+  const report = assembleReport(home);
+  const ids = report.findings.map((f) => f.id);
+  assert.ok(ids.includes("settings.jsonc_detected"), `expected settings.jsonc_detected in ${ids.join(", ")}`);
+  assert.equal(ids.includes("settings.invalid_json"), false, "two-phase detection: jsonc_detected is disjoint from invalid_json");
+
+  const jsoncFinding = report.findings.find((f) => f.id === "settings.jsonc_detected");
+  assert.equal(jsoncFinding.stance, "inform");
+});
+
+// T-101: when settings.json fails JSON.parse without any comments (e.g. a
+// truncated/corrupt file), settings.invalid_json fires — NOT jsonc_detected.
+test("settings.invalid_json fires for non-JSONC parse failure (no comments)", () => {
+  const home = mkdtempSync(path.join(tmpdir(), "claude-housekeeper-invalid-"));
+  mkdirSync(path.join(home, "plugins"), { recursive: true });
+  writeFileSync(path.join(home, "settings.json"), "{ truncated");
+
+  const report = assembleReport(home);
+  const ids = report.findings.map((f) => f.id);
+  assert.ok(ids.includes("settings.invalid_json"), `expected settings.invalid_json in ${ids.join(", ")}`);
+  assert.equal(ids.includes("settings.jsonc_detected"), false);
 });
 
 // ---------- helpers ----------

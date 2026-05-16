@@ -1,0 +1,17 @@
+{
+  // T-101 fixture: real-world JSONC settings with line comments.
+  // Claude Code may accept this file; strict JSON.parse refuses it.
+  "model": "claude-sonnet-4-5",
+  /* block comment describing the hooks section */
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        // inline comment between map entries
+        "hooks": [
+          { "type": "command", "command": "/bin/true" }
+        ]
+      }
+    ]
+  }
+}
