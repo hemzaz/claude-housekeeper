@@ -7,9 +7,15 @@ import test from "node:test";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const scriptsDir = path.resolve(__dirname, "..", "scripts");
 
-// These files are the designated v0.2 mutation surfaces.
+// These files are the designated v0.2 + v0.3 mutation surfaces.
 // All other scripts/ files must remain read-only.
-const MUTATION_ALLOWLIST = new Set(["lib/snapshot.mjs", "lib/clean-plan.mjs", "lib/rollback-plan.mjs"]);
+// `lib/harden-plan.mjs` added in v0.3 Phase 2 (T-200..T-204).
+const MUTATION_ALLOWLIST = new Set([
+  "lib/snapshot.mjs",
+  "lib/clean-plan.mjs",
+  "lib/rollback-plan.mjs",
+  "lib/harden-plan.mjs"
+]);
 
 const FORBIDDEN = [
   "unlinkSync",
