@@ -10,13 +10,14 @@ import {
   lstat,
   readlink,
   readFile,
+  copyFile,
   rm,
   unlink,
   readdir,
   stat
 } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { join, basename } from "node:path";
+import { join, basename, dirname } from "node:path";
 import os from "node:os";
 import { loadConfig, pathMatchesProtection } from "./policy.mjs";
 
@@ -629,3 +630,258 @@ export async function verify(id, home) {
 
   return manifest;
 }
+
+// ── MUTATION_REGISTRY — settings-rewrite (T-100..T-103) ─────────────────────
+//
+// Per docs/design/v0.3-design.md §3.1. The clean-plan.mjs MUTATION_REGISTRY is
+// a *delete-only* registry (factory → { apply, args }); the v0.3 settings-rewrite
+// kind needs a three-hook contract (preApply / apply / rollback), so it lives in
+// its own registry here adjacent to atomicWrite + hashFile.
+//
+// Op shape (per design §3.1):
+//   { kind: "settings-rewrite", targetPath: <abs path>, patch: <opaque> }
+//
+// The `patch` is opaque to this layer; the operator runs `applyPatch(parsed, patch)`
+// which is exported so callers (and tests) can compose patches without depending
+// on a specific patch DSL. v0.3 uses a minimal { op, path, value? } shape; the
+// full patch DSL is TBD by Phase 3 detector promotion (T-300..T-302).
+
+/**
+ * PreApplyRefusal — structured refusal returned by preApply hooks.
+ * Not thrown; callers inspect the returned object's `ok` field.
+ * Matches the refusal-set pattern used by clean-plan.mjs CleanPlanRefusal.
+ *
+ * Reasons (per design §3.3):
+ *   - "settings-jsonc-detected"     — comment tokens outside string context
+ *   - "patch-produces-invalid-json" — patched object fails JSON round-trip
+ *   - "patch-not-idempotent"        — apply-twice ≠ apply-once
+ *   - "settings-shape-unknown"      — strict JSON.parse failed AND no JSONC comments
+ */
+export class PreApplyRefusal extends Error {
+  constructor({ reason, targetPath, message }) {
+    super(message || reason);
+    this.name = "PreApplyRefusal";
+    this.reason = reason;
+    this.targetPath = targetPath || "";
+    this.message = message || reason;
+  }
+}
+
+/**
+ * hasJsoncComments(source) — placeholder for the lex-aware tokenizer scan
+ * (T-101, owned by Team 2 in audit.mjs). Until that helper lands, this stub
+ * always returns false, so a JSON.parse SyntaxError will surface as
+ * `settings-shape-unknown` rather than `settings-jsonc-detected`. The wiring
+ * point stays explicit so Team 2's exported helper can drop in with a single
+ * import swap.
+ *
+ * TODO(T-101): replace with import from audit.mjs.
+ */
+function hasJsoncComments(_source) {
+  return false;
+}
+
+/**
+ * applyPatch(obj, patch) — minimal patch DSL for v0.3.
+ * Pure function: returns a NEW object, never mutates `obj`.
+ *
+ * Supported ops (closed enum for v0.3):
+ *   { op: "remove", path: [...keys] }    — delete a nested key/index; missing is no-op (→ idempotent)
+ *   { op: "set",    path: [...keys], value: <json> } — set a nested key (→ idempotent)
+ *   { op: "append", path: [...keys], value: <json> } — push to an array (→ NON-idempotent; for tests)
+ *
+ * Returns a deep-cloned object with the patch applied. Throws TypeError on
+ * unknown op kinds. The deep clone uses structuredClone, which preserves
+ * arrays/objects/primitives — sufficient for settings.json values.
+ */
+export function applyPatch(obj, patch) {
+  if (!patch || typeof patch !== "object") {
+    throw new TypeError("applyPatch: patch must be an object");
+  }
+  const next = structuredClone(obj);
+  const segs = Array.isArray(patch.path) ? patch.path : [];
+
+  if (patch.op === "remove") {
+    if (segs.length === 0) return next;
+    let cursor = next;
+    for (let i = 0; i < segs.length - 1; i++) {
+      if (cursor == null || typeof cursor !== "object") return next;
+      cursor = cursor[segs[i]];
+    }
+    if (cursor == null || typeof cursor !== "object") return next;
+    const last = segs[segs.length - 1];
+    if (Array.isArray(cursor) && typeof last === "number") {
+      if (last >= 0 && last < cursor.length) cursor.splice(last, 1);
+    } else if (Object.prototype.hasOwnProperty.call(cursor, last)) {
+      delete cursor[last];
+    }
+    return next;
+  }
+
+  if (patch.op === "set") {
+    if (segs.length === 0) {
+      // Replace root only for object values; otherwise return new object as-is.
+      return patch.value;
+    }
+    let cursor = next;
+    for (let i = 0; i < segs.length - 1; i++) {
+      const key = segs[i];
+      if (cursor[key] == null || typeof cursor[key] !== "object") {
+        cursor[key] = {};
+      }
+      cursor = cursor[key];
+    }
+    cursor[segs[segs.length - 1]] = structuredClone(patch.value);
+    return next;
+  }
+
+  if (patch.op === "append") {
+    let cursor = next;
+    for (const key of segs) {
+      if (cursor == null || typeof cursor !== "object") {
+        throw new TypeError(`applyPatch append: path ${segs.join(".")} not navigable`);
+      }
+      cursor = cursor[key];
+    }
+    if (!Array.isArray(cursor)) {
+      throw new TypeError(`applyPatch append: target at ${segs.join(".")} is not an array`);
+    }
+    cursor.push(structuredClone(patch.value));
+    return next;
+  }
+
+  throw new TypeError(`applyPatch: unknown op "${patch.op}"`);
+}
+
+/**
+ * deepEqual(a, b) — structural equality via JSON canonicalisation. Sufficient
+ * for the patched-twice idempotency check: both sides went through JSON.parse +
+ * applyPatch, so neither contains Dates, RegExps, or other non-JSON values.
+ */
+function deepEqual(a, b) {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
+/**
+ * MUTATION_REGISTRY — settings-rewrite contract for v0.3 harden pipeline.
+ * Per docs/design/v0.3-design.md §3.1.
+ *
+ * Each registered kind is an object with three async hooks:
+ *   preApply(op) → { ok: true, plannedBytes } | PreApplyRefusal
+ *   apply(op)    → { content: <new bytes> }
+ *   rollback(op, snapshotEntry) → void (copyFile snapshot → target)
+ *
+ * The hooks are deterministic and stateless: they take the operation payload
+ * plus (for rollback) the matching snapshot entry, and return a value or refusal.
+ * No global state, no fs mutations outside the documented paths.
+ */
+export const MUTATION_REGISTRY = Object.freeze({
+  "settings-rewrite": Object.freeze({
+    /**
+     * preApply — runs BEFORE takeSnapshot. Five steps per design §3.1:
+     *   1. Strict JSON.parse the file at op.targetPath
+     *   2. On SyntaxError, run JSONC tokenizer; emit `settings-jsonc-detected`
+     *      if comments found, else `settings-shape-unknown`
+     *   3. Apply op.patch in-memory → result
+     *   4. JSON.stringify(result) and JSON.parse the output (round-trip).
+     *      On failure: `patch-produces-invalid-json`
+     *   5. Apply patch again to `result` → result2.
+     *      If !deepEqual(result, result2): `patch-not-idempotent`
+     *   Return { ok: true, plannedBytes: <bytes after step 4> }
+     */
+    preApply: async (op) => {
+      const source = await readFile(op.targetPath, "utf8");
+
+      let parsed;
+      try {
+        parsed = JSON.parse(source);
+      } catch {
+        const reason = hasJsoncComments(source)
+          ? "settings-jsonc-detected"
+          : "settings-shape-unknown";
+        return new PreApplyRefusal({ reason, targetPath: op.targetPath });
+      }
+
+      let firstApply;
+      try {
+        firstApply = applyPatch(parsed, op.patch);
+      } catch (err) {
+        return new PreApplyRefusal({
+          reason: "patch-produces-invalid-json",
+          targetPath: op.targetPath,
+          message: `Patch threw during application: ${err.message}`
+        });
+      }
+
+      // JSON round-trip — catches non-serialisable values (Infinity, NaN,
+      // undefined, functions, symbols, circular refs).
+      let plannedSource;
+      try {
+        plannedSource = JSON.stringify(firstApply, null, 2);
+        if (plannedSource === undefined) {
+          throw new TypeError("Patch result is not JSON-serialisable");
+        }
+        JSON.parse(plannedSource);
+      } catch (err) {
+        return new PreApplyRefusal({
+          reason: "patch-produces-invalid-json",
+          targetPath: op.targetPath,
+          message: err.message
+        });
+      }
+
+      // Idempotency: apply twice in-memory; the second application against
+      // the already-patched object must yield an identical result.
+      let secondApply;
+      try {
+        secondApply = applyPatch(firstApply, op.patch);
+      } catch (err) {
+        return new PreApplyRefusal({
+          reason: "patch-not-idempotent",
+          targetPath: op.targetPath,
+          message: `Second apply threw: ${err.message}`
+        });
+      }
+      if (!deepEqual(firstApply, secondApply)) {
+        return new PreApplyRefusal({
+          reason: "patch-not-idempotent",
+          targetPath: op.targetPath
+        });
+      }
+
+      return { ok: true, plannedBytes: Buffer.byteLength(plannedSource, "utf8") };
+    },
+
+    /**
+     * apply — read original → parse → applyPatch → JSON.stringify → atomicWrite.
+     * Returns { content } so the caller can compute sha256After.
+     *
+     * Re-reads + re-parses on every call so this is safe to invoke after a
+     * snapshot in the canonical sequence: preApply → snapshot → apply → verify.
+     * If preApply already passed, parse will not throw here barring concurrent
+     * mutation (which the upstream drift check in applyOperation catches).
+     */
+    apply: async (op) => {
+      const source = await readFile(op.targetPath, "utf8");
+      const parsed = JSON.parse(source);
+      const result = applyPatch(parsed, op.patch);
+      const out = JSON.stringify(result, null, 2) + os.EOL;
+      await atomicWrite(op.targetPath, out);
+      return { content: out };
+    },
+
+    /**
+     * rollback — identical to the file-restore-from-snapshot rollback path in
+     * scripts/lib/rollback-plan.mjs: copy the snapshot file back onto the
+     * target. Idempotent under repeated invocation; the snapshot tree is
+     * read-only after takeSnapshot returns.
+     *
+     * `snapshotEntry` is the matching makeFileSnapshot entry from the manifest;
+     * carries snapshotPath which is the absolute source for the restore.
+     */
+    rollback: async (op, snapshotEntry) => {
+      await mkdir(dirname(op.targetPath), { recursive: true });
+      await copyFile(snapshotEntry.snapshotPath, op.targetPath);
+    }
+  })
+});
