@@ -119,6 +119,52 @@ of the following on its own justifies v0.3:
   unknown fields per §1.3 and §1.4).
 - **A new refusal `class` or `reason`** value.
 - **A new status enum value** on the manifest (readers tolerate per §1.4).
+- **A new top-level command** added alongside `clean` / `rollback` /
+  `diagnose` / `plan` / `verify` (e.g. `harden`). New commands extend
+  the surface; existing commands keep their flags and semantics.
+
+### v0.3 confirmation: `harden` and `settings-rewrite` are additive
+
+The v0.3 release line adds two surfaces. Both are additive under §2.1
+and the bullets above; neither triggers a v1.0:
+
+1. **`settings-rewrite` mutation kind.** A new entry in
+   `MUTATION_REGISTRY` per
+   [`docs/design/v0.3-design.md §3.1`](./design/v0.3-design.md#31-settings-rewrite-mutation-kind).
+   Joins `dir-rmtree` and `file-unlink` without renaming or removing
+   either. Manifest `schemaVersion` stays `"0.2"`; readers MUST
+   tolerate the new `mutationKind` value per §1.4. Documented in
+   [`schema-stability.md` documented mutation kinds](./schema-stability.md#documented-mutation-kinds).
+
+2. **`harden --confirm` command.** A new top-level command mirroring
+   `clean --confirm`'s flag set (`--confirm`, `--yes`, `--target=`,
+   `--path=`, `--dry-run`, `--timeout=`, `--json`, `--safe`) per
+   [`docs/design/v0.3-design.md §3.6`](./design/v0.3-design.md#36-harden-cli-surface).
+   No existing flag's semantics change; the `command` field in the
+   operation manifest already enumerates `"harden"` as a stable value
+   per §1.4 of this doc and the schema-stability table.
+
+Per §1.6, adding a new command and adding new flags to that new command
+are additive. Existing commands' help text, exit codes, and
+refusal-classifier behavior are unchanged. The 12-rule classifier in
+`scripts/lib/clean-plan.mjs` is shared between `clean` and `harden`
+(per design §3.2) and gains new refusal `reason` values
+(`settings-jsonc-detected`, `settings-shape-unknown`,
+`patch-not-idempotent`, `patch-produces-invalid-json`,
+`settings-network-filesystem`, `batch-exceeds-aggregate-budget`) —
+adding a new `reason` is explicitly additive per §1.2.
+
+The corresponding `clean --batch` extension (multiple `--target=` /
+`--path=` pairs aggregated into one operation manifest, per design
+§3 and the Q3 ruling in design §2.3) is also additive: `--batch` is a
+new flag, repeated pair parsing is a parser-only addition, and the
+manifest carries one or many `files[]` entries the same way it
+already does. No `schemaVersion` bump.
+
+The `schemaVersion` "own line" rule from §1.3 and §1.4 still binds —
+v0.3 does not touch either schema version. A future release that
+needs to break either line will move the package to v1.0 in the same
+release per §2.
 
 ### v1.0 — major, breaking change required
 

@@ -261,3 +261,158 @@ private disclosure channel; the issue tracker is public.
 - [`docs/team-governance-threat-model.md`](team-governance-threat-model.md) —
   governance-side threat model (separate from the rollback flow
   covered here).
+
+---
+
+## 8. Settings-write surface (v0.3)
+
+v0.3 adds `harden --confirm` and the `settings-rewrite` mutation kind,
+which read-modify-writes `<home>/.claude/settings.json` via the same
+atomic-write protocol that v0.2's `dir-rmtree` / `file-unlink` use.
+The trust boundary from §2 is unchanged — Housekeeper still runs as
+the home owner, with no remote surface, no signing, and no
+multi-user defense. This section pins what the settings-write surface
+adds and what it does not.
+
+### 8.1 Atomic-rename guarantees
+
+The settings rewrite protocol (per
+[`docs/design/v0.3-design.md §3.1`](./design/v0.3-design.md#31-settings-rewrite-mutation-kind)
+and the v0.3 platform memo
+[`docs/design/v0.3-platform-memo.md §4`](./design/v0.3-platform-memo.md#4-race-condition-analysis-atomic-rename-mid-read))
+is:
+
+1. Read original, parse, apply patch in memory.
+2. Validate output (re-parse, idempotency).
+3. Snapshot the original byte-for-byte under the operation tree.
+4. Write `settings.json.tmp.<pid>`, `fsync` the tmp fd.
+5. `rename(2)` tmp → `settings.json`.
+6. `fsync` the parent dir.
+
+POSIX `rename(2)` is required to be atomic for paths within the same
+filesystem (IEEE Std 1003.1). The macOS APFS BSD `rename(2)` man page
+and the Linux man-pages 6.x `rename(2)` entry both document atomic
+replacement of an existing destination: any concurrent reader sees
+either the old name pointing at the old inode or the new name
+pointing at the new inode, never an intermediate state where the
+file is missing or partially written.
+
+This is the v0.3 supported-platform contract:
+
+| Platform | `rename(2)` atomicity | Open-fd preserves old inode | Source |
+| --- | --- | --- | --- |
+| macOS APFS | Yes | Yes | BSD `man 2 rename` |
+| Linux ext4 (`data=ordered`) | Yes | Yes | Linux `man 2 rename` |
+
+### 8.2 Race window: Claude reading mid-write
+
+The race window between step 4 (tmp written) and step 5 (rename
+committed) is bounded by the `rename` syscall itself — microseconds.
+For a concurrent Claude Code process reading `settings.json`:
+
+- A read in progress against the old inode completes against the old
+  inode's data. The rename does not interrupt an in-flight `read(2)`.
+- A read that started before the rename and holds the fd continues
+  reading the old inode (now unlinked from the name); subsequent
+  reads on the same fd remain consistent with the old content.
+- A read that `open()`s after the rename gets the new inode and the
+  new content.
+
+**Claude sees old or new, never partial.** This is the load-bearing
+guarantee that justifies omitting a settings-write lock against
+Claude itself.
+
+The v0.3 platform memo §1.4 records that Claude Code's re-read
+semantics for `settings.json` are undocumented — Claude almost
+certainly reads at session start and may or may not watch the file.
+Housekeeper does not promise hot-reload; every successful `harden`
+emits a `RELOAD HINT` block instructing the user to restart their
+Claude session for the change to take effect in-flight (per
+v0.3-design.md §3.6). This is a UX guarantee, not a security one.
+
+### 8.3 Network filesystem exclusion
+
+NFS and SMB do not guarantee POSIX atomic-rename semantics
+(implementation-dependent client behavior; some return `-EBUSY`,
+some leave behind a `.nfsXXXX` ghost, none reliably preserve
+open-fd-against-old-inode across the swap). Allowing
+`settings-rewrite` on such a home would silently violate the §8.2
+race-window guarantee.
+
+v0.3 therefore adds a new refusal class
+**`settings-network-filesystem`** to the `composeHardenPlan`
+classifier (per v0.3-design.md §3.3). The check inspects the
+target's filesystem type (via `statfs.f_fstypename` on macOS,
+`statfs.f_type` on Linux) and refuses if the type is `nfs`, `smb`,
+`cifs`, or any other non-local filesystem not on the supported list.
+The refusal carries a `nextStep` directing the user to copy the
+home to a local filesystem before retrying.
+
+### 8.4 Threats considered (settings-write specific)
+
+These extend the §3 threat list with surface-specific cases. The
+existing threats T1–T8 still apply.
+
+#### T9. Mid-write read returning partial JSON
+
+**Defense:** Atomic `rename(2)` per §8.1; the rename is the commit
+boundary. The pre-rename `fsync` of the tmp fd plus the post-rename
+`fsync` of the parent dir orders the data write ahead of the metadata
+swap so a crash between `rename` and parent `fsync` still leaves either
+the durable old file or the durable new file.
+
+**Residual risk:** None on macOS APFS or Linux ext4 under default
+journaling modes (§8.1 table). Network filesystems are excluded
+under §8.3.
+
+#### T10. Patch that produces structurally-invalid JSON
+
+**Defense:** The `settings-rewrite` `preApply` hook re-parses the
+serialized output before the snapshot is taken. A failed re-parse
+fires the refusal class `patch-produces-invalid-json` and aborts
+before any on-disk state changes. Tested in
+`test/harden-plan.test.mjs` (T-204, Phase 2).
+
+#### T11. Non-idempotent patch corrupting state on re-apply
+
+**Defense:** The `preApply` hook applies the patch twice to the same
+in-memory tree and asserts byte-equality. A non-idempotent patch
+fires `patch-not-idempotent` and aborts. This catches patches that
+append instead of merge, or whose result depends on the input
+(e.g. timestamp-based mutations).
+
+#### T12. JSONC settings file silently mis-rewritten
+
+**Defense:** Comments cannot be safely round-tripped through a
+strict-JSON serialize / atomic-rewrite cycle (per the v0.3 platform
+memo §2.4 and design §2.2). A two-phase detection (strict JSON.parse
+first; on `SyntaxError`, lex-aware tokenizer scan for `//` or `/*`
+outside string context) fires the refusal `settings-jsonc-detected`
+before any mutation. The user is routed to manual edit.
+
+#### T13. Settings file on network filesystem
+
+**Defense:** §8.3 — `settings-network-filesystem` refusal.
+
+### 8.5 Trust boundary unchanged from v0.2
+
+The v0.3 settings-write surface does **not** change the §2 trust
+boundary:
+
+- Still single-user local. Housekeeper runs as the home owner.
+- No remote operation, no daemon, no socket. The atomic-rename
+  protocol is local-filesystem only.
+- No signing, no HMAC. An attacker with write access to
+  `<home>/.claude/settings.json` already has write access to the
+  home (same uid, same trust domain) and could mutate the file
+  directly. The same G13 trade-off that applies to operation
+  manifests (§4) applies here: HMAC on the settings target would
+  not raise the bar against a same-uid attacker.
+- The `harden --confirm --yes` contract mirrors v0.2's
+  `clean --confirm --yes`: explicit consent, explicit target,
+  explicit path. No path from observation to action.
+
+If you operate Housekeeper outside the single-user-local assumption,
+the analysis here is not sufficient — settings-write defenses for
+multi-user / fleet / remote scenarios remain v0.4+ concerns, listed
+under the v0.3-candidates note in §4.
