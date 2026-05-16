@@ -1,7 +1,8 @@
 {
   "schemaVersion": "0.1",
   "mode": "safe",
-  "home": "<home>",
+  "home": "fixtures/synthetic-homes/duplicate-scope-plugin/home/.claude",
+  "generatedAt": "2026-05-16T10:51:42.984Z",
   "filesChanged": false,
   "primary": "plugin.duplicate_registration",
   "stanceSummary": {
@@ -17,44 +18,40 @@
   "findings": [
     {
       "id": "plugin.duplicate_registration",
-      "class": "integrity",
+      "class": "divergence",
       "claimLevel": "finding",
       "stance": "review",
-      "summary": "same plugin appears registered at both user and project scope",
+      "summary": "syn-tool@syn-market is registered in multiple scopes",
+      "targetPath": "fixtures/synthetic-homes/duplicate-scope-plugin/home/.claude/plugins/installed_plugins.json",
       "surface": {
-        "surfaceClass": "authored-config",
-        "ownerClass": "user-owned",
-        "loadBearingClass": "known-load-bearing",
+        "surfaceClass": "claude-app-data",
+        "ownerClass": "claude-managed",
+        "loadBearingClass": "possibly-load-bearing",
         "sensitivityClass": "private-path",
         "executionClass": "inert",
         "rollbackClass": "snapshot-possible",
         "scopeClass": "in-scope",
         "confidence": "medium",
-        "limits": ["safe-mode-no-loader-key"]
+        "limits": [
+          "safe-mode-no-loader-key"
+        ]
       },
       "evidence": {
         "structural": [
-          "user settings parsed",
-          "project settings parsed",
-          "both list the same plugin name"
+          "syn-tool@syn-market has 2 registrations across 2 scope(s)"
         ],
-        "loader": [
-          "documented precedence places project above user"
-        ],
+        "loader": [],
         "behavioral": [],
         "ownership": [],
         "freshness": [],
         "reversibility": [],
         "missing": [
-          "effective precedence in current session",
-          "user intent for second registration"
+          "user-intent"
         ]
       },
-      "nextAllowedStep": "show both registrations and documented precedence; do not deduplicate",
+      "nextAllowedStep": "review intent before any change",
       "blockedActions": [
-        "remove one scope",
-        "infer one registration is orphaned",
-        "mutate either settings file"
+        "mutate registry without intent confirmation"
       ]
     }
   ],
