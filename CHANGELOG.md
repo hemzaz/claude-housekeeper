@@ -12,21 +12,72 @@ with two caveats documented in the design notes:
 
 ## [Unreleased]
 
+_No changes yet._
+
+## [0.2.0] — 2026-05-16
+
+GA release of the v0.2 line. Drops the `-beta` suffix after the GA-blocker
+pass landed on `main` and the first soak night passed against a real
+`~/.claude`.
+
 ### Added
 
-- `CHANGELOG.md` (this file) covering every tagged release.
+- `CHANGELOG.md` covering every tagged release.
 - `docs/migration-v0.1-to-v0.2.md` — user-facing v0.1 → v0.2 upgrade guide.
 - `docs/threat-model.md` — single-user local threat model documenting
   trust boundaries for the snapshot, rollback, and operation-manifest
   surfaces. Records G13 (manifest signing) as deliberately out of scope
   for v0.2 with rationale.
+- `docs/versioning-policy.md` (G12, #72) — what is stable within a major
+  (detector ids, refusal `class`/`reason`, schema versions, bin name,
+  public flags) and what triggers v0.3 vs v1.0.
+- `nextStep` field on every clean refusal (G7, #71). Refusals carry a
+  user-facing recovery hint alongside `class`/`reason`/`message`. Internal
+  `ownerClass`/`executionClass`/`rollbackClass` tokens are no longer
+  surfaced in user-visible messages.
+- `--timeout=<seconds>` flag on `clean` (G15, #74). Exits 124 (matches
+  GNU `timeout(1)`) when the deadline fires. Distinct from refusal (2)
+  and runtime failure (1) so CI can detect deadline expiry separately.
+- `scripts/soak.sh` (N3, #75) — read-only nightly soak runner that
+  captures diagnose/plan/verify output, diffs against yesterday, and
+  enforces stop conditions (`filesChanged: true`, schemaVersion drift,
+  malformed op id, empty refusal message).
+- Two new fixtures (G8, #69 #70):
+  - `dual-scope-plugin-install/` — user-scope and project-scope install
+    of the same plugin.
+  - `plugin-installed-from-disk/` — `installSource: "local"`, no
+    marketplace metadata.
 
 ### Changed
 
 - `README.md` "Current Checks" now marks each detector as
   **cleanable in v0.2.0**, **planned**, or **never cleanable**.
 - `README.md` and `docs/index.html` link to the new CHANGELOG,
-  migration guide, and threat model.
+  migration guide, threat model, and versioning policy.
+
+### Fixed
+
+- **Abort recovery hint mapping** (G16, #73). `abortRollbackOperation`
+  refused `planned` operations despite the CHANGELOG v0.2.0-beta.1 promise
+  that both `planned` and `snapshot_taken` are abortable; the audit hint
+  also routed `planned` (and legacy-coerced-to-planned) operations to
+  bare `rollback <id>`, which then refused because plain rollback requires
+  `applied` — a dead-end loop. Both fixed; all non-terminal statuses now
+  map to a command that doesn't refuse.
+- **Object-keyed registry `installPath` default** (#80). The audit's
+  `flattenPluginEntries` parsed the array-form `installed_plugins.json`
+  with a conventional `<home>/plugins/cache/<marketplace>/<name>/<version>`
+  default when `installPath` was omitted, but the object-keyed form
+  spread `...record` raw — so an entry without `installPath` caused the
+  matching cache to be flagged as `plugin.cache_unreferenced`. Fixed by
+  parsing the `<name>@<marketplace>` key (with `lastIndexOf("@")` for
+  scoped names) and applying the same default.
+- **`duplicate-scope-plugin` fixture aligned with detector** (#81). The
+  fixture's golden claimed `plugin.duplicate_registration` should fire,
+  but the detector only reads `installed_plugins.json` (not per-scope
+  `settings.json` blocks). Result: diagnose silently reported
+  `home.clean`. Fixture now populates `installed_plugins.json` with both
+  scope entries; goldens regenerated.
 
 ## [0.2.0-beta.1] — 2026-05-11
 
@@ -211,7 +262,8 @@ cache drift, and protected local state.
 - Do-not-touch rules are a hard boundary; protected findings are
   visible but non-actionable.
 
-[Unreleased]: https://github.com/hemzaz/claude-housekeeper/compare/v0.2.0-beta.1...HEAD
+[Unreleased]: https://github.com/hemzaz/claude-housekeeper/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/hemzaz/claude-housekeeper/releases/tag/v0.2.0
 [0.2.0-beta.1]: https://github.com/hemzaz/claude-housekeeper/releases/tag/v0.2.0-beta.1
 [0.2.0-alpha.1]: https://github.com/hemzaz/claude-housekeeper/releases/tag/v0.2.0-alpha.1
 [0.1.2]: https://github.com/hemzaz/claude-housekeeper/releases/tag/v0.1.2

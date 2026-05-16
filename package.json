@@ -1,6 +1,6 @@
 {
   "name": "claude-housekeeper",
-  "version": "0.2.0-beta.1",
+  "version": "0.2.0",
   "description": "Read-only diagnostics and safety rails for Claude Code plugin, registry, state, settings, and log hygiene.",
   "type": "module",
   "homepage": "https://hemzaz.github.io/claude-housekeeper/",
