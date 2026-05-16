@@ -3,10 +3,10 @@ No files changed.
 
 PRIMARY
   stance: review
-  finding: same plugin appears registered at both user and project scope
-  evidence: user settings parsed; project settings parsed; both list the same plugin name
-  missing key: effective precedence in current session and user intent for the second registration
-  next step: decide whether this is intentional before planning changes
+  finding: syn-tool@syn-market is registered in multiple scopes
+  evidence: syn-tool@syn-market has 2 registrations across 2 scope(s)
+  missing key: user-intent
+  next step: review intent before any change
 
 STANCE SUMMARY
   inform   0
@@ -26,9 +26,7 @@ BOUNDARIES
 SCAN
   mode: safe
   degraded: no
-  skipped: live /status precedence probe
+  skipped: live Claude probes
 
 BLOCKED ACTIONS
-  remove one scope
-  infer one registration is orphaned
-  mutate either settings file
+  mutate registry without intent confirmation
