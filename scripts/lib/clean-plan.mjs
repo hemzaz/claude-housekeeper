@@ -100,6 +100,42 @@ export class NotImplementedError extends Error {
   }
 }
 
+// ── Batch constants (T-500..T-504, design C19/C20) ────────────────────────────
+//
+// Aggregate budget for `clean --batch`: per design C19 the default cap is 10
+// pairs, max 50 (matches per-op snapshot budget). Aggregate file/byte limits
+// match snapshot.mjs MAX_OPERATION_FILES/BYTES — same plumbing, one manifest.
+
+/** Default number of --target/--path pairs accepted without explicit --batch. */
+export const BATCH_DEFAULT_CAP = 10;
+
+/** Hard maximum number of pairs accepted via --batch=N (C19). */
+export const BATCH_MAX_PAIRS = 50;
+
+/** Aggregate file budget across all batch ops (matches snapshot MAX_OPERATION_FILES). */
+export const BATCH_AGGREGATE_FILE_LIMIT = MAX_OPERATION_FILES;
+
+/** Aggregate byte budget across all batch ops (matches snapshot MAX_OPERATION_BYTES, 10 MiB). */
+export const BATCH_AGGREGATE_BYTE_LIMIT = MAX_OPERATION_BYTES;
+
+/**
+ * BatchBudgetError — thrown by composeBatchCleanPlan when the aggregate
+ * file/byte sum exceeds the v0.3 batch budget. Refusal class
+ * `batch-exceeds-aggregate-budget` per design §3.3 / C20.
+ */
+export class BatchBudgetError extends Error {
+  constructor(actual, limit) {
+    const parts = [];
+    if (actual.files > limit.files) parts.push(`${actual.files} files (limit ${limit.files})`);
+    if (actual.bytes > limit.bytes) parts.push(`${actual.bytes} bytes (limit ${limit.bytes})`);
+    super(`batch-exceeds-aggregate-budget: ${parts.join("; ")}`);
+    this.name = "BatchBudgetError";
+    this.code = "batch-exceeds-aggregate-budget";
+    this.actual = actual;
+    this.limit = limit;
+  }
+}
+
 // ── MUTATION_REGISTRY ─────────────────────────────────────────────────────────
 
 /**
@@ -348,7 +384,13 @@ const NEXT_STEP_BY_REASON = Object.freeze({
   "drift-detected":
     "Local command no longer matches its plugin counterpart. Inspect with `diff` and resolve manually.",
   "no-mutation-mapping-in-v0.2":
-    "Not cleanable in v0.2.0. Track the roadmap in CHANGELOG.md; use `rm` only if you accept the risk."
+    "Not cleanable in v0.2.0. Track the roadmap in CHANGELOG.md; use `rm` only if you accept the risk.",
+  "batch-exceeds-aggregate-budget":
+    "Reduce the number of --target/--path pairs, or split the batch into multiple invocations.",
+  "settings-rewrite-not-batchable":
+    "Run `claude-housekeeper harden` for settings-rewrite findings; v0.3 batch only covers dir-rmtree and file-unlink ops.",
+  "batch-pair-cap-exceeded":
+    "Reduce pair count or raise --batch=N (max 50 per design)."
 });
 
 function nextStepFor(reason) {
@@ -944,6 +986,252 @@ export async function executeCleanPlan(plan, home) {
     }
 
     return finalManifest;
+  } finally {
+    await releaseLock(acquiredPath);
+  }
+}
+
+// ── Batch compose + execute (T-500..T-504) ────────────────────────────────────
+//
+// Per design §2.3 Q3 ruling: manifest-atomic verification, NO auto-rollback.
+// One snapshot manifest covers all ops in the batch. On any per-op verify
+// failure the manifest stays at `applied` with partialApply=true and
+// housekeeper.interrupted_operation surfaces it on next diagnose.
+//
+// Per C6: v0.3 batch EXCLUDES `settings-rewrite` ops. Only `dir-rmtree` and
+// `file-unlink` are batchable; settings-rewrite findings get a per-pair
+// `settings-rewrite-not-batchable` refusal so the operator routes them to
+// `harden` (Phase 4).
+
+/**
+ * composeBatchCleanPlan(home, options) — aggregate N findings into one batch
+ * plan. Reuses composeCleanPlan per pair, collects ops + refusals, then
+ * enforces:
+ *   1. pair count ≤ batchCap (default BATCH_DEFAULT_CAP, max BATCH_MAX_PAIRS)
+ *   2. settings-rewrite kinds → per-pair refusal (C6)
+ *   3. aggregate file/byte sum ≤ snapshot budget (C20)
+ *
+ * Returns { schemaVersion, home, operations, refused, pairs, composedAt,
+ * reportHash, batchCap }. Throws BatchBudgetError when the aggregate
+ * file/byte sum exceeds the snapshot budget (handler converts to refusal +
+ * exit 2).
+ */
+export async function composeBatchCleanPlan(home, options = {}) {
+  const pairs = Array.isArray(options.pairs) ? options.pairs : [];
+  const batchCap = Number.isInteger(options.batchCap) && options.batchCap > 0
+    ? Math.min(options.batchCap, BATCH_MAX_PAIRS)
+    : BATCH_DEFAULT_CAP;
+  const allowedExecutionClasses = options.allowedExecutionClasses;
+
+  // C19: pair-count cap. Fires before any per-pair compose so we don't pay
+  // assembleReport N times for a doomed batch.
+  if (pairs.length > batchCap) {
+    return {
+      schemaVersion: "0.2",
+      home,
+      operations: [],
+      refused: [{
+        class: "CleanPlanRefusal",
+        reason: "batch-pair-cap-exceeded",
+        targetPath: "",
+        detectorId: "",
+        message: `Got ${pairs.length} pairs; batch cap is ${batchCap}`,
+        nextStep: nextStepFor("batch-pair-cap-exceeded"),
+        exitCode: 2
+      }],
+      pairs,
+      composedAt: new Date().toISOString(),
+      reportHash: "",
+      batchCap
+    };
+  }
+
+  const operations = [];
+  const refused = [];
+  let reportHash = "";
+  const composedAt = new Date().toISOString();
+
+  for (const pair of pairs) {
+    const perPlan = await composeCleanPlan(home, {
+      target: pair.target,
+      path: pair.path,
+      allowedExecutionClasses
+    });
+    // Hash freshness — every per-pair compose re-runs assembleReport so all
+    // hashes should agree. We capture the first one for drift detection.
+    if (!reportHash) reportHash = perPlan.reportHash;
+
+    for (const op of perPlan.operations) {
+      // C6: settings-rewrite excluded from batch. Convert to refusal so the
+      // operator routes to harden. Use a synthetic detectorId for visibility.
+      if (op.mutationKind === "settings-rewrite") {
+        refused.push({
+          class: "CleanPlanRefusal",
+          reason: "settings-rewrite-not-batchable",
+          targetPath: op.targetPath,
+          detectorId: op.detectorId,
+          message: "v0.3 batch excludes settings-rewrite operations (design C6)",
+          nextStep: nextStepFor("settings-rewrite-not-batchable"),
+          exitCode: 2
+        });
+        continue;
+      }
+      operations.push(op);
+    }
+    for (const r of perPlan.refused) {
+      refused.push(r);
+    }
+  }
+
+  // C20: aggregate budget. Sum across all operations' expandedFiles + bytes.
+  let totalFiles = 0;
+  let totalBytes = 0;
+  for (const op of operations) {
+    totalFiles += (op.expandedFiles && op.expandedFiles.length) || 0;
+    totalBytes += op.estimatedBytes || 0;
+  }
+  if (
+    totalFiles > BATCH_AGGREGATE_FILE_LIMIT
+    || totalBytes > BATCH_AGGREGATE_BYTE_LIMIT
+  ) {
+    // Convert to refusal-set (mirrors per-pair pattern); empty operations.
+    return {
+      schemaVersion: "0.2",
+      home,
+      operations: [],
+      refused: [
+        ...refused,
+        {
+          class: "CleanPlanRefusal",
+          reason: "batch-exceeds-aggregate-budget",
+          targetPath: "",
+          detectorId: "",
+          message: `Aggregate batch budget exceeded: ${totalFiles} files / ${totalBytes} bytes (limit ${BATCH_AGGREGATE_FILE_LIMIT} files / ${BATCH_AGGREGATE_BYTE_LIMIT} bytes)`,
+          nextStep: nextStepFor("batch-exceeds-aggregate-budget"),
+          exitCode: 2
+        }
+      ],
+      pairs,
+      composedAt,
+      reportHash,
+      batchCap
+    };
+  }
+
+  return {
+    schemaVersion: "0.2",
+    home,
+    operations,
+    refused,
+    pairs,
+    composedAt,
+    reportHash,
+    batchCap
+  };
+}
+
+/**
+ * executeBatchCleanPlan(plan, home) — acquire lock, take ONE snapshot of every
+ * file across every operation, apply per-file with mutation-kind dispatch,
+ * verify per-file. Per Q3: status reaches `verified` only when EVERY file
+ * verifies; on any failure the manifest stays at `applied` with
+ * partialApply=true.
+ *
+ * Returns the final manifest. Releases the lock in finally.
+ */
+export async function executeBatchCleanPlan(plan, home) {
+  const snapshotHome = dirname(home);
+  const lockPath = join(home, "housekeeper", "lock");
+
+  // Pre-flight lock probe (mirrors executeCleanPlan).
+  if (existsSync(lockPath)) {
+    try {
+      const raw = await readFile(lockPath, "utf8");
+      const existing = JSON.parse(raw);
+      const stalenessAt = new Date(existing.stalenessAt).getTime();
+      if (Date.now() < stalenessAt) throw new LockHeldError(existing);
+    } catch (err) {
+      if (err instanceof LockHeldError) throw err;
+    }
+  }
+
+  const acquiredPath = await acquireLock(home);
+
+  try {
+    await gcSnapshots(snapshotHome);
+
+    // Flatten every op's expandedFiles into one snapshot target list with a
+    // parallel per-file dispatch table that knows which mutation kind owns it.
+    // Order is preserved so per-file dispatch lines up with manifest.files[i].
+    const targets = [];
+    const dispatchByIndex = []; // { kind: "dir-rmtree" | "file-unlink", dirPath?, isLastInDir }
+    const dirLastIndex = new Map(); // dirPath -> last flat index, to fire rmdir once
+
+    for (const op of plan.operations) {
+      const expanded = (op.expandedFiles && op.expandedFiles.length > 0)
+        ? op.expandedFiles
+        : [];
+      for (const f of expanded) {
+        targets.push(f);
+        if (op.mutationKind === "file-unlink") {
+          dispatchByIndex.push({ kind: "file-unlink" });
+        } else {
+          // dir-rmtree
+          const dirPath = op.mutationOp?.args?.dirPath || op.targetPath;
+          dispatchByIndex.push({ kind: "dir-rmtree", dirPath });
+          dirLastIndex.set(dirPath, targets.length - 1);
+        }
+      }
+    }
+
+    if (targets.length === 0) {
+      // Nothing to snapshot — return a synthetic manifest. (Caller filters this
+      // earlier; defensive guard for empty operations after refusals strip them.)
+      return {
+        schemaVersion: "0.2",
+        id: "",
+        status: "verified",
+        partialApply: false,
+        files: []
+      };
+    }
+
+    const consentSummary = [
+      `clean --batch --confirm --yes — ${plan.operations.length} operation(s)`,
+      ...plan.operations.map((op) => `  ${op.mutationKind}  ${op.targetPath}  (${op.estimatedBytes}B)`)
+    ].join("\n");
+
+    const { opId } = await takeSnapshot(snapshotHome, {
+      targets,
+      command: "clean",
+      mode: "confirm",
+      consentSummary
+    });
+
+    // Build per-file apply callables matching the dispatch table.
+    const ops = targets.map((_, idx) => ({
+      apply: async (origPath) => {
+        const d = dispatchByIndex[idx];
+        await rm(origPath, { recursive: false, force: false });
+        if (d.kind === "dir-rmtree" && dirLastIndex.get(d.dirPath) === idx) {
+          try {
+            await rm(d.dirPath, { recursive: true, force: false });
+          } catch {
+            // Already gone or non-empty due to a per-file apply failure earlier
+            // in the same dir. Either way the verify pass surfaces residuals.
+          }
+        }
+      }
+    }));
+
+    const applied = await applyOperation(opId, snapshotHome, ops);
+
+    // Q3 ruling: if any per-file apply failed, manifest stays `applied` with
+    // partialApply=true and we do NOT call verify (status would not advance).
+    if (applied.partialApply) return applied;
+
+    const verified = await verify(opId, snapshotHome);
+    return verified;
   } finally {
     await releaseLock(acquiredPath);
   }
