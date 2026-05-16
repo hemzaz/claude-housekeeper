@@ -141,6 +141,26 @@ test("array-form installed plugin registry marks matching cache version as live"
   assert.equal(ids.includes("plugin.cache_unreferenced"), false);
 });
 
+// Object-keyed form is symmetric to the array form above: when `installPath`
+// is omitted, flattenPluginEntries must default it to the conventional
+// `<home>/plugins/cache/<marketplace>/<name>/<version>` path so the entry
+// matches the cache directory and is NOT flagged as orphaned.
+test("object-keyed installed plugin registry without installPath defaults to conventional cache path", () => {
+  const home = fixtureHome();
+  const live = path.join(home, "plugins/cache/market/tool/1.0.0");
+  mkdirSync(live, { recursive: true });
+  writeJson(path.join(home, "plugins/installed_plugins.json"), {
+    version: 2,
+    plugins: { "tool@market": [{ scope: "user", version: "1.0.0", enabled: true }] }
+  });
+  writeJson(path.join(home, "settings.json"), {});
+
+  const report = assembleReport(home);
+  const ids = report.findings.map((f) => f.id);
+  assert.equal(ids.includes("plugin.expected_orphan"), false);
+  assert.equal(ids.includes("plugin.cache_unreferenced"), false);
+});
+
 test("plugin.cache_size evidence ranks top-3 plugins by total bytes", () => {
   const home = fixtureHome();
   // Three plugins; "bigplugin" should dominate, "midplugin" second, "smallplugin" third.
