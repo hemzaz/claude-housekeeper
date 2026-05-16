@@ -1,0 +1,29 @@
+HOUSEKEEPER REPORT
+No files changed.
+
+PRIMARY
+  stance: inform
+  finding: settings.json appears to use JSONC comments (not supported by Housekeeper rewrite)
+  evidence: raw text contains `//` or `/*` comments outside string context
+  missing key: pinned Claude Code citation that settings.json accepts JSONC
+  next step: strip comments manually before invoking harden, or wait for v0.4 JSONC support
+
+STANCE SUMMARY
+  inform   1
+  watch    0
+  review   0
+  probe    0
+  protect  0
+  prepare  0
+  repair   0
+  block    0
+
+BOUNDARIES
+  protected: 0
+  sector-boundary: 0
+  secret-adjacent skipped: 0
+
+SCAN
+  mode: safe
+  degraded: no
+  skipped: live Claude probes

@@ -1,0 +1,59 @@
+{
+  "schemaVersion": "0.1",
+  "mode": "safe",
+  "home": "<home>",
+  "filesChanged": false,
+  "primary": "settings.jsonc_detected",
+  "stanceSummary": {
+    "inform": 1,
+    "watch": 0,
+    "review": 0,
+    "probe": 0,
+    "protect": 0,
+    "prepare": 0,
+    "repair": 0,
+    "block": 0
+  },
+  "findings": [
+    {
+      "id": "settings.jsonc_detected",
+      "class": "orientation",
+      "claimLevel": "observation",
+      "stance": "inform",
+      "summary": "settings.json appears to use JSONC comments (not supported by Housekeeper rewrite)",
+      "surface": {
+        "surfaceClass": "authored-config",
+        "ownerClass": "user-owned",
+        "loadBearingClass": "known-load-bearing",
+        "sensitivityClass": "private-path",
+        "executionClass": "inert",
+        "rollbackClass": "snapshot-possible",
+        "scopeClass": "in-scope",
+        "confidence": "high",
+        "limits": []
+      },
+      "evidence": {
+        "structural": [
+          "settings.json failed strict JSON parse",
+          "raw text contains `//` or `/*` comments outside string context",
+          "Claude Code may accept this file; Housekeeper cannot safely round-trip comments through a rewrite"
+        ],
+        "loader": [],
+        "behavioral": [],
+        "ownership": [],
+        "freshness": [],
+        "reversibility": [],
+        "missing": [
+          "pinned Claude Code citation that settings.json accepts JSONC"
+        ]
+      },
+      "nextAllowedStep": "strip comments manually before invoking harden, or wait for v0.4 JSONC support",
+      "blockedActions": [
+        "mutate settings via harden",
+        "round-trip comments through snapshot"
+      ]
+    }
+  ],
+  "boundaries": [],
+  "degraded": []
+}

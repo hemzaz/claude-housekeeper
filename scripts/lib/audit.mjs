@@ -38,6 +38,7 @@ const DEFAULT_SCOPE = "all";
 const SCOPE_TO_DETECTORS = {
   settings: [
     "settings.invalid_json",
+    "settings.jsonc_detected",
     "settings.hook_path_dangling",
     "settings.hook_command_shell_ambiguous",
     "settings.mcp_command_missing"
@@ -108,6 +109,7 @@ export function assembleReport(home, options = {}) {
   push(detectorOutputs, selected, detectHousekeeperStaleLock(context));
 
   push(detectorOutputs, selected, detectSettingsInvalidJson(context));
+  push(detectorOutputs, selected, detectSettingsJsoncDetected(context));
   pushAll(detectorOutputs, selected, detectHookPathDangling(context));
   pushAll(detectorOutputs, selected, detectHookCommandShellAmbiguous(context));
   pushAll(detectorOutputs, selected, detectMcpCommandMissing(context));
@@ -395,6 +397,11 @@ function pickProbeMetadata(finding) {
 
 function detectSettingsInvalidJson(context) {
   if (context.settings.ok) return null;
+  // T-101: two-phase detection. If the strict-JSON parse failed AND the raw
+  // text contains JSONC-style comments (outside string context), surface the
+  // disjoint `settings.jsonc_detected` finding instead — see
+  // detectSettingsJsoncDetected and docs/design/v0.3-design.md §2.2/§3.3 (C4).
+  if (context.settings.raw && hasJsonComments(context.settings.raw)) return null;
   return {
     id: "settings.invalid_json",
     class: "integrity",
@@ -408,6 +415,85 @@ function detectSettingsInvalidJson(context) {
     nextAllowedStep: "generate patch preview or edit manually",
     blockedActions: ["dependent hook and MCP inference"]
   };
+}
+
+// T-101: settings.jsonc_detected — emit when the settings file fails strict
+// JSON.parse but a lex-aware scan finds `//` or `/*` outside string context.
+// Per docs/design/v0.3-design.md §2.2 (Q2 ruling), v0.3 refuses to mutate
+// JSONC files; this detector surfaces the situation at `inform` stance so the
+// user knows the file is not broken — Housekeeper just cannot harden it.
+function detectSettingsJsoncDetected(context) {
+  if (context.settings.ok) return null;
+  if (!context.settings.raw) return null;
+  if (!hasJsonComments(context.settings.raw)) return null;
+  return {
+    id: "settings.jsonc_detected",
+    class: "orientation",
+    claimLevel: "observation",
+    targetPath: context.settingsFile,
+    surface: makeSurfaceClassification({
+      surfaceClass: "authored-config",
+      ownerClass: "user-owned",
+      loadBearingClass: "known-load-bearing",
+      sensitivityClass: "private-path",
+      executionClass: "inert",
+      rollbackClass: "snapshot-possible",
+      scopeClass: "in-scope",
+      confidence: "high"
+    }),
+    evidence: {
+      structural: [
+        "settings.json failed strict JSON parse",
+        "raw text contains `//` or `/*` comments outside string context",
+        "Claude Code may accept this file; Housekeeper cannot safely round-trip comments through a rewrite"
+      ]
+    },
+    missingKeys: ["pinned Claude Code citation that settings.json accepts JSONC"],
+    summary: "settings.json appears to use JSONC comments (not supported by Housekeeper rewrite)",
+    nextAllowedStep: "strip comments manually before invoking harden, or wait for v0.4 JSONC support",
+    blockedActions: ["mutate settings via harden", "round-trip comments through snapshot"],
+    forceStance: "inform"
+  };
+}
+
+// T-101: lex-aware JSON-comment detector. Walks the raw text character by
+// character tracking JSON string context (`"` open/close with `\\` escape)
+// and returns true the moment a `//` or `/*` is seen OUTSIDE a string. Used
+// by detectSettingsJsoncDetected and exported so harden-plan's
+// settings-rewrite.preApply can refuse JSONC inputs at compose time
+// (docs/design/v0.3-design.md §3.1, §3.3 PreApplyRefusal classes).
+//
+// Performance: O(n) single pass, no allocations beyond the scalar booleans.
+// Idempotent: same input always yields the same boolean.
+export function hasJsonComments(text) {
+  if (typeof text !== "string" || text.length < 2) return false;
+  let inString = false;
+  let escape = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (escape) {
+      escape = false;
+      continue;
+    }
+    if (inString) {
+      if (c === "\\") {
+        escape = true;
+        continue;
+      }
+      if (c === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (c === '"') {
+      inString = true;
+      continue;
+    }
+    if (c === "/" && (text[i + 1] === "/" || text[i + 1] === "*")) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function detectHookPathDangling(context) {
@@ -1234,10 +1320,19 @@ function collectPolicyMatches(targetPath, context) {
 
 function readJson(file) {
   if (!existsSync(file)) return { ok: true, missing: true, value: null, file };
+  let raw;
   try {
-    return { ok: true, missing: false, value: JSON.parse(readFileSync(file, "utf8")), file };
+    raw = readFileSync(file, "utf8");
   } catch (error) {
     return { ok: false, missing: false, value: null, file, error: error.message };
+  }
+  try {
+    return { ok: true, missing: false, value: JSON.parse(raw), file, raw };
+  } catch (error) {
+    // T-101: keep the raw text on parse failure so two-phase detection
+    // (see detectSettingsInvalidJson, detectSettingsJsoncDetected) can
+    // run a lex-aware comment scan over it without re-reading the file.
+    return { ok: false, missing: false, value: null, file, error: error.message, raw };
   }
 }
 
