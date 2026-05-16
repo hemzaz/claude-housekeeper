@@ -28,3 +28,14 @@ jobs:
       - run: npm run lint
       - run: npm run format
       - run: npm --cache "$RUNNER_TEMP/npm-cache" pack --dry-run
+
+  version-pin:
+    name: docs/index.html version pin
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: docs/index.html version pin matches package.json
+        run: |
+          VERSION="$(jq -r .version package.json)"
+          grep -q "v$VERSION" docs/index.html \
+            || (echo "::error::docs/index.html version pin does not match package.json v$VERSION" && exit 1)

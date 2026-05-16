@@ -209,3 +209,51 @@ addition:
 - A bump to `schemaVersion: "0.3"` will be accompanied by a migration guide
   and a backward-compatibility reader, following the same pattern as
   [rollback-contracts.md §6](./rollback-contracts.md#6-migration-path-for-v01x-manifests).
+
+## Documented mutation kinds
+
+The `MUTATION_REGISTRY` in `scripts/lib/snapshot.mjs` enumerates the
+mutation kinds the apply/rollback pipeline knows how to dispatch. Each
+kind has a paired `apply` and `rollback` handler; some carry a
+`preApply` hook for validation before the snapshot is committed.
+
+Mutation kinds are stable strings within a major; renaming one is a
+breaking change. Adding a new kind is additive and ships in a minor.
+Per [versioning-policy.md §2](./versioning-policy.md#2-what-triggers-a-v03-minor-vs-v10-major),
+adding a new mutation kind does NOT bump either `schemaVersion`
+(report `"0.1"` or manifest `"0.2"`); the manifest grows a new
+`mutationKind` value, which readers MUST tolerate per the change
+rules above.
+
+| Kind | Added in | Apply contract | Rollback contract |
+| --- | --- | --- | --- |
+| `dir-rmtree` | v0.2 | Recursively remove a directory tree after snapshot | Restore the snapshot tree byte-for-byte |
+| `file-unlink` | v0.2 | Unlink a single file after snapshot | Restore the snapshot file byte-for-byte |
+| `settings-rewrite` | v0.3 | Read → parse → apply structural patch → strict JSON serialize → atomic rename (write-temp + rename + fsync-parent) | Restore the snapshot file byte-for-byte |
+
+### `settings-rewrite` (added v0.3)
+
+The `settings-rewrite` kind targets `<home>/.claude/settings.json`. Its
+apply/rollback contract is defined in
+[`docs/design/v0.3-design.md §3.1`](./design/v0.3-design.md#31-settings-rewrite-mutation-kind):
+
+- The `preApply` hook strict-parses the file, runs the JSONC tokenizer
+  on `SyntaxError`, applies the patch in memory, validates the output
+  re-parses, and asserts idempotency (apply twice yields the same
+  result). Any failure surfaces as a structured refusal
+  (`settings-jsonc-detected`, `patch-produces-invalid-json`,
+  `patch-not-idempotent`) before the snapshot is taken.
+- `apply` writes the new content via the existing atomic-write helper
+  (write-temp + `rename(2)` + fsync-parent). Per
+  [threat-model.md §8](./threat-model.md#8-settings-write-surface-v03)
+  this gives a concurrent Claude reader either the old or new content
+  in full, never a partial.
+- `rollback` is identical in shape to the existing
+  file-restore-from-snapshot path.
+
+Manifest impact: a `settings-rewrite` operation produces a normal
+manifest `files[]` entry with the standard `sha256Before` /
+`sha256After` / `mode` / `size` keys. No new top-level manifest field
+is required; `schemaVersion` stays at `"0.2"`. The `command` field
+takes the value `"harden"` (already enumerated as a stable command
+value above).
