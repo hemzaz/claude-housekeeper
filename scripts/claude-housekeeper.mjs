@@ -31,6 +31,13 @@ import {
   RollbackNotImplementedError,
   SnapshotIntegrityError
 } from "./lib/rollback-plan.mjs";
+import {
+  composeHardenPlan,
+  validateHardenPlan,
+  executeHardenPlan,
+  HardenPlanDriftError,
+  HardenLockHeldError
+} from "./lib/harden-plan.mjs";
 
 const VALID_COMMANDS = new Set([
   "diagnose",
@@ -53,7 +60,7 @@ Commands:
   plan                Detailed per-finding plan with paths and next steps.
   verify              Run live Claude CLI smoketest probes.
   clean               Snapshot-backed cleanup for one approved finding.
-  harden              Planned; refuses mutation.
+  harden              Snapshot-backed settings.json rewrite for one finding.
   rollback <id>       Restore a named Housekeeper operation snapshot.
 
 Options:
@@ -64,11 +71,11 @@ Options:
   --home=<path>       Claude home root (default: $CLAUDE_HOME or ~/.claude).
   --config=<path>     Override the housekeeper config path.
   --max-files=<n>     Bound the projects-tree walk; emits home.scan_budget_hit if hit.
-  --timeout=<seconds> For clean: wall-clock deadline. If clean has not finished
-                        when the timer fires, the process exits 124 (matches
-                        timeout(1)). Designed for CI / network mounts where
-                        composeCleanPlan re-runs assembleReport (Q-USER-2).
-                        Default: no deadline.
+  --timeout=<seconds> For clean and harden: wall-clock deadline. If the
+                        operation has not finished when the timer fires, the
+                        process exits 124 (matches timeout(1)). Designed for
+                        CI / network mounts where compose re-runs
+                        assembleReport (Q-USER-2). Default: no deadline.
   --dry-run           For rollback, print the rollback plan without changing files.
   --abort             For rollback, cancel a snapshot_taken operation and delete
                         its unused snapshot tree.
@@ -79,13 +86,16 @@ Options:
   --yes               Skip the consent prompt. REQUIRED in combination with
                         --confirm to actually mutate. Designed for CI / scripted
                         runs; matches the no-stdin convention.
-  --target=<id>       Detector id of the finding to clean (e.g.
-                        plugin.cache_unreferenced). REQUIRED when clean
-                        --confirm is set. Repeat to clean multiple findings
-                        in one snapshot manifest (must be paired in order
-                        with --path).
-  --path=<path>       Absolute path of the finding to clean. REQUIRED when
-                        clean --confirm is set. Must match a path from
+  --target=<id>       Detector id of the finding to clean or harden (e.g.
+                        plugin.cache_unreferenced,
+                        settings.hook_path_dangling). REQUIRED when clean
+                        --confirm is set, and also when harden --confirm is
+                        set. Repeat to clean multiple findings in one
+                        snapshot manifest (must be paired in order with
+                        --path).
+  --path=<path>       Absolute path of the finding to clean or harden.
+                        REQUIRED when clean --confirm is set (and likewise
+                        for harden --confirm). Must match a path from
                         \`diagnose\`. Repeat to clean multiple findings
                         (paired in order with --target).
   --batch=<n>         Maximum number of --target/--path pairs to process in
@@ -282,17 +292,17 @@ function formatBytes(bytes) {
   return `${bytes} B`;
 }
 
-// G15: arm a wall-clock deadline for the clean pipeline. Sync stretches of
+// G15: arm a wall-clock deadline for clean/harden pipelines. Sync stretches of
 // assembleReport will not preempt mid-flight, but the timer fires reliably
-// between awaited stages (composeCleanPlan → validateCleanPlan → executeCleanPlan)
-// and when the event loop reaches the next tick after sync work. Exit code
-// 124 matches GNU `timeout(1)` so CI can detect deadline expiry distinctly
-// from refusal (2) or runtime failure (1).
-function armCleanTimeout(options) {
+// between awaited stages (compose → validate → execute) and when the event
+// loop reaches the next tick after sync work. Exit code 124 matches GNU
+// `timeout(1)` so CI can detect deadline expiry distinctly from refusal (2)
+// or runtime failure (1). Shared by `clean` (T-704 / G15) and `harden` (T-402).
+function armOperationTimeout(options, label) {
   if (!options.timeoutSeconds || options.timeoutSeconds <= 0) return () => {};
   const ms = Math.round(options.timeoutSeconds * 1000);
   const timer = setTimeout(() => {
-    process.stderr.write(`clean: deadline ${options.timeoutSeconds}s reached; aborting.\n`);
+    process.stderr.write(`${label}: deadline ${options.timeoutSeconds}s reached; aborting.\n`);
     process.exit(124);
   }, ms);
   if (typeof timer.unref === "function") timer.unref();
@@ -300,7 +310,7 @@ function armCleanTimeout(options) {
 }
 
 async function runClean(options) {
-  const clearDeadline = armCleanTimeout(options);
+  const clearDeadline = armOperationTimeout(options, "clean");
   try {
     return await runCleanInner(options);
   } finally {
@@ -557,8 +567,139 @@ async function runCleanBatch(options) {
   }
 }
 
-function runHarden() {
-  fail("No files were changed. harden is planned, but prevention hooks must be reviewed before installation.", 2);
+// T-401: runHarden — mirrors runClean's four-branch consent gate but routes
+// through composeHardenPlan / validateHardenPlan / executeHardenPlan from
+// scripts/lib/harden-plan.mjs. T-402 wraps the body in armOperationTimeout
+// so --timeout=N exits 124 on deadline (parity with G15 for clean).
+async function runHarden(options) {
+  const clearDeadline = armOperationTimeout(options, "harden");
+  try {
+    return await runHardenInner(options);
+  } finally {
+    clearDeadline();
+  }
+}
+
+async function runHardenInner(options) {
+  // Branch 1: no --confirm → dry-run plan view of the current report. Mirrors
+  // runCleanInner: render the same plan output diagnose/plan would produce so
+  // the user sees the hardenable candidates without arming mutation.
+  if (!options.confirm) {
+    const mode = pickMode(options);
+    const report = assembleReport(options.home, {
+      scope: options.scope,
+      configPath: options.configPath,
+      mode,
+      scanLimits: options.scanLimits
+    });
+    const renderOpts = { redact: options.redact, home: options.home };
+    if (options.json) printJson(renderJsonReport(report, renderOpts));
+    else console.log(renderPlanReport(report, renderOpts));
+    process.exitCode = 0;
+    return;
+  }
+
+  // Branch 2: --confirm but missing --target/--path.
+  if (!options.target || !options.path) {
+    fail("Missing --target or --path. Run `claude-housekeeper plan` to see hardenable candidates.", 2);
+    return;
+  }
+
+  // Branch 3: --confirm + --target + --path but no --yes — show what would
+  // happen, then refuse mutation.
+  if (!options.yes) {
+    const plan = await composeHardenPlan(options.home, {
+      target: options.target,
+      path: options.path
+    });
+    if (options.json) {
+      printJson({ plan });
+    } else {
+      console.log("HOUSEKEEPER HARDEN");
+      if (plan.operations.length > 0) {
+        const op = plan.operations[0];
+        console.log(`${plan.operations.length} operation planned. Op id: (pending)\n`);
+        console.log(`  ${op.mutationKind}  ${op.targetPath}  (${formatBytes(op.estimatedBytes)})\n`);
+      } else if (plan.refused.length > 0) {
+        for (const r of plan.refused) {
+          console.log(`Refusing: ${r.detectorId} — ${r.reason}.`);
+          if (r.message) console.log(r.message);
+          if (r.nextStep) console.log(`  Next: ${r.nextStep}`);
+        }
+      }
+    }
+    fail("Refusing mutation: --yes not passed. Pass --confirm --yes to skip the\nprompt and apply.", 2);
+    return;
+  }
+
+  // Branch 4: --confirm + --yes + --target + --path → full execute flow.
+  try {
+    const plan = await composeHardenPlan(options.home, {
+      target: options.target,
+      path: options.path
+    });
+
+    if (plan.refused.length > 0) {
+      if (options.json) {
+        printJson({ refused: plan.refused });
+      } else {
+        for (const r of plan.refused) {
+          console.log(`Refusing: ${r.detectorId} — ${r.reason}.`);
+          if (r.message) console.log(r.message);
+          if (r.nextStep) console.log(`  Next: ${r.nextStep}`);
+        }
+      }
+      process.exitCode = 2;
+      return;
+    }
+
+    const validated = await validateHardenPlan(plan, options.home);
+    const manifest = await executeHardenPlan(validated, options.home);
+
+    if (options.json) {
+      printJson({ manifest });
+      process.exitCode = manifest.status === "verified" ? 0 : 1;
+      return;
+    }
+
+    const op = plan.operations[0];
+    const opId = manifest.id || manifest.opId;
+    console.log("HOUSEKEEPER HARDEN");
+    console.log(`1 operation planned. Op id: ${opId}\n`);
+    console.log(`  ${op.mutationKind}  ${op.targetPath}  (${formatBytes(op.estimatedBytes)})\n`);
+    console.log(`  snapshot taken    → ${options.home}/housekeeper/snapshots/${opId}/...`);
+    console.log(`  applied           → settings.json rewritten`);
+    console.log(`  verified          → sha256 matches expected post-state`);
+    console.log("");
+    console.log(`DONE: 1 operation verified, op_id=${opId}`);
+    console.log("");
+    // C11: RELOAD HINT — harden mutates settings.json; Claude does not
+    // document hot-reload semantics, so tell the user to restart their session.
+    console.log("RELOAD HINT: Claude does not document hot-reload of settings.json.");
+    console.log("             Restart your Claude session for the change to take effect.");
+    console.log("");
+    console.log(`To roll back: claude-housekeeper rollback ${opId}`);
+
+    process.exitCode = manifest.status === "verified" ? 0 : 1;
+  } catch (err) {
+    if (err instanceof HardenLockHeldError) {
+      if (options.json) {
+        printJson({ error: "lock-held", pid: err.lockManifest.pid, hostname: err.lockManifest.hostname });
+      } else {
+        fail(`Lock held by pid ${err.lockManifest.pid} on ${err.lockManifest.hostname} until ${err.lockManifest.stalenessAt}. If the prior run is no longer active, delete ${options.home}/housekeeper/lock and retry.`, 2);
+      }
+      return;
+    }
+    if (err instanceof HardenPlanDriftError) {
+      if (options.json) {
+        printJson({ error: "plan-drift", expected: err.expectedHash, actual: err.actualHash });
+      } else {
+        fail("Plan drift detected: the home state changed between plan composition and execution. Re-run `harden` to pick up the latest state.", 2);
+      }
+      return;
+    }
+    throw err;
+  }
 }
 
 // Suppress unused-import warnings for batch budget constants surfaced for
@@ -819,7 +960,7 @@ try {
     else if (options.command === "plan") runPlan(options);
     else if (options.command === "clean") await runClean(options);
     else if (options.command === "verify") runVerify(options);
-    else if (options.command === "harden") runHarden(options);
+    else if (options.command === "harden") await runHarden(options);
     else if (options.command === "rollback") await runRollback(options);
   }
 } catch (error) {

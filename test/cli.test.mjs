@@ -385,3 +385,152 @@ test("clean --timeout=-5 is refused as non-positive (G15)", () => {
   assert.notEqual(result.status, 0);
   assert.match(result.stderr + result.stdout, /Invalid --timeout value/);
 });
+
+// ── T-400..T-403 harden CLI wiring tests ────────────────────────────────────
+
+/**
+ * Build a minimal synthetic Claude home with a settings.json that contains a
+ * hook command pointing at a missing plugin-cache path — triggers the real
+ * settings.hook_path_dangling detector (hardenable in v0.3).
+ *
+ * Returns { home, settingsPath, missingHookPath } where `home` is the .claude
+ * directory (CLI expects basename `.claude` per resolveClaudeHome).
+ */
+function makeHardenableClaudeHome() {
+  const parent = mkdtempSync(path.join(tmpdir(), "ck-harden-cli-"));
+  const home = path.join(parent, ".claude");
+  mkdirSync(path.join(home, "plugins"), { recursive: true });
+  const settingsPath = path.join(home, "settings.json");
+  const missingHookPath = path.join(home, "plugins", "cache", "ghost-mp", "ghost-plug", "1.0.0", "hook.sh");
+  // Also seed a healthy hook so we can prove harden left it in place.
+  const okHookPath = path.join(home, "real-hook.sh");
+  writeFileSync(okHookPath, "#!/bin/sh\necho ok\n");
+  const settings = {
+    hooks: {
+      PreToolUse: [{
+        matcher: "Bash",
+        hooks: [
+          { type: "command", command: okHookPath },
+          { type: "command", command: missingHookPath }
+        ]
+      }]
+    }
+  };
+  writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n");
+  return { home, settingsPath, missingHookPath, okHookPath };
+}
+
+// T-400/T-403 #1 — help text mentions harden in command list (already present
+// indirectly via the Commands block; this test pins it explicitly so future
+// help edits cannot silently drop it).
+test("harden appears in --help command list with rewrite wording", () => {
+  const result = runCli(["--help"]);
+  assert.equal(result.status, 0);
+  assert.match(result.stdout, /^\s*harden\s+/m, "harden listed under Commands");
+  assert.match(result.stdout, /settings\.json rewrite|Snapshot-backed settings/);
+});
+
+// T-403 #2 — `harden` with no flags prints a plan view and exits 0.
+test("harden (no flags) prints plan/diagnose output and exits 0", () => {
+  const { home } = makeHardenableClaudeHome();
+  const result = runCli(["harden", `--home=${home}`]);
+  assert.equal(result.status, 0, `expected exit 0, got ${result.status}: ${result.stderr}`);
+  // Plan output begins with the HOUSEKEEPER banner from renderPlanReport.
+  assert.match(result.stdout, /HOUSEKEEPER|hook_path_dangling/);
+});
+
+// T-403 #3 — `harden --confirm` without --yes exits 2 with Refusing mutation.
+test("harden --confirm without --yes exits 2 with Refusing mutation", () => {
+  const { home, settingsPath } = makeHardenableClaudeHome();
+  const result = runCli([
+    "harden", "--confirm",
+    "--target=settings.hook_path_dangling",
+    `--path=${settingsPath}`,
+    `--home=${home}`
+  ]);
+  assert.equal(result.status, 2, `expected exit 2, got ${result.status}`);
+  assert.match(result.stderr, /Refusing mutation/);
+  assert.match(result.stderr, /--yes/);
+  // The plan preview should be printed to stdout before the refusal.
+  assert.match(result.stdout, /HOUSEKEEPER HARDEN/);
+});
+
+// T-403 #4 — `harden --confirm --yes` without --target/--path exits 2.
+test("harden --confirm --yes without --target/--path exits 2 with missing-flag error", () => {
+  const { home } = makeHardenableClaudeHome();
+  const result = runCli(["harden", "--confirm", "--yes", `--home=${home}`]);
+  assert.equal(result.status, 2, `expected exit 2, got ${result.status}`);
+  assert.match(result.stderr, /Missing --target or --path/);
+  assert.match(result.stderr, /claude-housekeeper plan/);
+});
+
+// T-403 #5 — full happy path: harden mutates settings.json and prints RELOAD HINT.
+test("harden --confirm --yes --target=... happy path: exits 0, mutates settings, prints RELOAD HINT", () => {
+  const { home, settingsPath, missingHookPath, okHookPath } = makeHardenableClaudeHome();
+  const result = runCli([
+    "harden", "--confirm", "--yes",
+    "--target=settings.hook_path_dangling",
+    `--path=${settingsPath}`,
+    `--home=${home}`
+  ]);
+  assert.equal(
+    result.status, 0,
+    `expected exit 0, got ${result.status}:\nstdout: ${result.stdout}\nstderr: ${result.stderr}`
+  );
+  assert.match(result.stdout, /HOUSEKEEPER HARDEN/);
+  assert.match(result.stdout, /DONE: 1 operation verified, op_id=op_/);
+  // C11 RELOAD HINT lines (exact wording from design §3.6).
+  assert.match(result.stdout, /RELOAD HINT: Claude does not document hot-reload of settings\.json\./);
+  assert.match(result.stdout, /Restart your Claude session for the change to take effect\./);
+  assert.match(result.stdout, /To roll back: claude-housekeeper rollback op_/);
+  // settings.json was mutated — the dangling hook is gone; the healthy one survives.
+  const after = JSON.parse(readFileSync(settingsPath, "utf8"));
+  const commands = (after.hooks?.PreToolUse?.[0]?.hooks || []).map((h) => h.command);
+  assert.ok(!commands.includes(missingHookPath), "dangling hook must be removed");
+  assert.ok(commands.includes(okHookPath), "healthy hook must survive");
+  // The operation manifest must exist on disk and be in 'verified' state.
+  const opIdMatch = result.stdout.match(/op_id=(op_[0-9]{14}_[0-9a-f]{8})/);
+  assert.ok(opIdMatch, "stdout should expose op id");
+  const manifestPath = path.join(home, "housekeeper", "operations", `${opIdMatch[1]}.json`);
+  const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+  assert.equal(manifest.status, "verified");
+});
+
+// T-403 #6 — rollback round-trip: capture op id from harden, then rollback
+// restores settings.json byte-for-byte to its pre-harden state.
+test("harden then rollback restores settings.json byte-for-byte", () => {
+  const { home, settingsPath } = makeHardenableClaudeHome();
+  const before = readFileSync(settingsPath, "utf8");
+
+  const hardened = runCli([
+    "harden", "--confirm", "--yes",
+    "--target=settings.hook_path_dangling",
+    `--path=${settingsPath}`,
+    `--home=${home}`
+  ]);
+  assert.equal(hardened.status, 0, `harden failed:\n${hardened.stdout}\n${hardened.stderr}`);
+  const opIdMatch = hardened.stdout.match(/op_id=(op_[0-9]{14}_[0-9a-f]{8})/);
+  assert.ok(opIdMatch, "harden output should expose op id");
+  const opId = opIdMatch[1];
+  // Sanity: settings.json changed.
+  const mid = readFileSync(settingsPath, "utf8");
+  assert.notEqual(mid, before, "harden should have mutated settings.json");
+
+  const rolledBack = runCli([
+    "rollback", opId, "--confirm", "--yes", `--home=${home}`
+  ]);
+  assert.equal(
+    rolledBack.status, 0,
+    `rollback failed:\nstdout: ${rolledBack.stdout}\nstderr: ${rolledBack.stderr}`
+  );
+  assert.match(rolledBack.stdout, /DONE\. Operation rolled back\./);
+  const after = readFileSync(settingsPath, "utf8");
+  assert.equal(after, before, "rollback must restore settings.json byte-for-byte");
+});
+
+// T-402 — harden surfaces --timeout in --help and rejects invalid values at parse time.
+test("harden --timeout=invalid exits non-zero with parse error (T-402)", () => {
+  const result = runCli(["harden", "--timeout=not-a-number"]);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr + result.stdout, /Invalid --timeout value/);
+});
