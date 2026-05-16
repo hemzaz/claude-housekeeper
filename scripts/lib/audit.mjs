@@ -1260,7 +1260,20 @@ function flattenPluginEntries(installed, home) {
   const entries = [];
   for (const [key, records] of Object.entries(installed.plugins)) {
     if (!Array.isArray(records)) continue;
-    for (const record of records) entries.push({ key, ...record });
+    // Object-keyed form keys are `"<name>@<marketplace>"`; split once from the right
+    // so plugin names containing `@` (e.g. scoped packages) stay intact.
+    const at = key.lastIndexOf("@");
+    const name = at > 0 ? key.slice(0, at) : key;
+    const marketplace = at > 0 ? key.slice(at + 1) : "unknown";
+    for (const record of records) {
+      const version = record.version || "unknown";
+      entries.push({
+        key,
+        ...record,
+        installPath: record.installPath
+          || path.join(home, "plugins", "cache", marketplace, name, version)
+      });
+    }
   }
   return entries;
 }

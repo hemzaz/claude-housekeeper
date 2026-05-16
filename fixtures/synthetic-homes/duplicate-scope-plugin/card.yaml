@@ -8,17 +8,9 @@ mode_expectations:
     claim_level: finding
     stance: review
 surfaces:
-  - path: ~/.claude/settings.json
-    surfaceClass: authored-config
-    ownerClass: user-owned
-    loadBearingClass: known-load-bearing
-    sensitivityClass: private-path
-    executionClass: inert
-    rollbackClass: snapshot-possible
-    scopeClass: in-scope
-  - path: .claude/settings.json
-    surfaceClass: authored-config
-    ownerClass: project-owned
+  - path: ~/.claude/plugins/installed_plugins.json
+    surfaceClass: claude-managed-state
+    ownerClass: claude-managed
     loadBearingClass: known-load-bearing
     sensitivityClass: private-path
     executionClass: inert
@@ -26,17 +18,18 @@ surfaces:
     scopeClass: in-scope
 evidence:
   structural:
-    - same plugin name registered at user and project scope
+    - same plugin@marketplace key registered in multiple scope records
   loader:
     - documented precedence places project above user
   missing:
     - effective precedence in current session
     - user intent for second registration
 finding:
-  class: integrity
+  id: plugin.duplicate_registration
+  class: divergence
   stance: review
-allowed_next_step: show both registrations and documented precedence; do not deduplicate
+allowed_next_step: review intent before any change
 blocked_actions:
   - remove one scope
   - infer one registration is orphaned
-  - mutate either settings file
+  - mutate registry without intent confirmation
