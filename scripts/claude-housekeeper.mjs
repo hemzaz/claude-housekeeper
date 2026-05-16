@@ -10,9 +10,15 @@ import {
   composeCleanPlan,
   validateCleanPlan,
   executeCleanPlan,
+  composeBatchCleanPlan,
+  executeBatchCleanPlan,
   LockHeldError,
   PlanDriftError,
-  NotImplementedError
+  NotImplementedError,
+  BatchBudgetError,
+  BATCH_AGGREGATE_FILE_LIMIT,
+  BATCH_AGGREGATE_BYTE_LIMIT,
+  BATCH_MAX_PAIRS
 } from "./lib/clean-plan.mjs";
 import {
   composeRollbackPlan,
@@ -75,10 +81,16 @@ Options:
                         runs; matches the no-stdin convention.
   --target=<id>       Detector id of the finding to clean (e.g.
                         plugin.cache_unreferenced). REQUIRED when clean
-                        --confirm is set.
+                        --confirm is set. Repeat to clean multiple findings
+                        in one snapshot manifest (must be paired in order
+                        with --path).
   --path=<path>       Absolute path of the finding to clean. REQUIRED when
                         clean --confirm is set. Must match a path from
-                        \`diagnose\`.
+                        \`diagnose\`. Repeat to clean multiple findings
+                        (paired in order with --target).
+  --batch=<n>         Maximum number of --target/--path pairs to process in
+                        one batch (default 10, max 50). Excludes
+                        settings-rewrite ops per v0.3 design C6.
   -h, --help          Show this help and exit.
   -v, --version       Print version and exit.
 
@@ -127,6 +139,9 @@ function parseArgs(argv) {
     scanLimits: null,
     target: null,
     path: null,
+    targets: [],
+    paths: [],
+    batchCap: null,
     abort: false,
     timeoutSeconds: 0
   };
@@ -146,8 +161,16 @@ function parseArgs(argv) {
       options.scanLimits = options.scanLimits || {};
       options.scanLimits.maxFiles = Number(arg.slice("--max-files=".length));
     }
-    else if (arg.startsWith("--target=")) options.target = arg.slice("--target=".length);
-    else if (arg.startsWith("--path=")) options.path = arg.slice("--path=".length);
+    else if (arg.startsWith("--target=")) options.targets.push(arg.slice("--target=".length));
+    else if (arg.startsWith("--path=")) options.paths.push(arg.slice("--path=".length));
+    else if (arg.startsWith("--batch=")) {
+      const raw = arg.slice("--batch=".length);
+      const parsed = Number(raw);
+      if (!Number.isInteger(parsed) || parsed <= 0 || parsed > BATCH_MAX_PAIRS) {
+        throw new Error(`Invalid --batch value: ${raw} — must be a positive integer ≤ ${BATCH_MAX_PAIRS}.`);
+      }
+      options.batchCap = parsed;
+    }
     else if (arg.startsWith("--timeout=")) {
       const raw = arg.slice("--timeout=".length);
       const parsed = Number(raw);
@@ -159,6 +182,22 @@ function parseArgs(argv) {
     else if (command === "rollback" && !options.rollbackId) options.rollbackId = arg;
     else throw new Error(`Unknown argument: ${arg} — run \`claude-housekeeper --help\` for usage.`);
   }
+
+  // T-500: pair --target/--path arrays into options.pairs. Single-pair callers
+  // get options.target/path filled for back-compat with runCleanInner's single
+  // path. Multi-pair callers (or anyone passing --batch) go through the batch
+  // path. Mismatched array lengths is an early parse error.
+  if (options.targets.length !== options.paths.length) {
+    throw new Error(
+      `--target and --path must be paired (got ${options.targets.length} target(s) and ${options.paths.length} path(s)).`
+    );
+  }
+  options.pairs = options.targets.map((t, i) => ({ target: t, path: options.paths[i] }));
+  if (options.targets.length === 1) {
+    options.target = options.targets[0];
+    options.path = options.paths[0];
+  }
+  options.isBatch = options.pairs.length > 1 || options.batchCap !== null;
 
   return options;
 }
@@ -287,10 +326,15 @@ async function runCleanInner(options) {
     return;
   }
 
-  // Branch 2: --confirm but missing --target or --path.
-  if (!options.target || !options.path) {
+  // Branch 2: --confirm but missing --target/--path pairs.
+  if (options.pairs.length === 0) {
     fail("Missing --target or --path. Run `claude-housekeeper plan` to see candidates.", 2);
     return;
+  }
+
+  // T-500: route to batch handler when 2+ pairs OR --batch flag set explicitly.
+  if (options.isBatch) {
+    return await runCleanBatch(options);
   }
 
   // Branch 3: --confirm + --target + --path but no --yes.
@@ -399,9 +443,128 @@ async function runCleanInner(options) {
   }
 }
 
+// T-500..T-504: batch clean handler. Mirrors runCleanInner branches 3/4 but
+// composes ONE plan covering N pairs and ONE snapshot manifest. Per Q3 ruling
+// (design §2.3): manifest-atomic verification; on any failure the manifest
+// stays `applied` with partialApply: true and the user runs `rollback <id>`
+// for all-or-none restore.
+async function runCleanBatch(options) {
+  try {
+    const plan = await composeBatchCleanPlan(options.home, {
+      pairs: options.pairs,
+      batchCap: options.batchCap
+    });
+
+    // Branch 3: --confirm + pairs but no --yes → show what would happen.
+    if (!options.yes) {
+      if (options.json) {
+        printJson({ plan });
+      } else {
+        console.log("HOUSEKEEPER CLEAN (batch)");
+        if (plan.operations.length > 0) {
+          console.log(`${plan.operations.length} operation(s) planned. Op id: (pending)\n`);
+          for (const op of plan.operations) {
+            console.log(`  ${op.mutationKind}  ${op.targetPath}  (${formatBytes(op.estimatedBytes)})`);
+          }
+        }
+        for (const r of plan.refused) {
+          console.log(`Refusing: ${r.detectorId || r.targetPath} — ${r.reason}.`);
+          if (r.message) console.log(`  ${r.message}`);
+          if (r.nextStep) console.log(`  Next: ${r.nextStep}`);
+        }
+      }
+      fail("Refusing mutation: --yes not passed. Pass --confirm --yes to skip the\nprompt and apply.", 2);
+      return;
+    }
+
+    // Pre-execute refusals (budget, settings-rewrite exclusion, classifier hits).
+    if (plan.operations.length === 0 || plan.refused.length > 0) {
+      if (options.json) {
+        printJson({ refused: plan.refused, operations: plan.operations });
+      } else {
+        for (const r of plan.refused) {
+          console.log(`Refusing: ${r.detectorId || r.targetPath} — ${r.reason}.`);
+          if (r.message) console.log(`  ${r.message}`);
+          if (r.nextStep) console.log(`  Next: ${r.nextStep}`);
+        }
+      }
+      // If any refusal blocks the whole batch (budget), the operations list is
+      // also empty — exit 2 in either case.
+      if (plan.operations.length === 0) {
+        process.exitCode = 2;
+        return;
+      }
+    }
+
+    const manifest = await executeBatchCleanPlan(plan, options.home);
+
+    if (options.json) {
+      printJson({ manifest });
+      process.exitCode = manifest.status === "verified" ? 0 : 1;
+      return;
+    }
+
+    const opId = manifest.id;
+    console.log("HOUSEKEEPER CLEAN (batch)");
+    console.log(`${plan.operations.length} operation(s) applied. Op id: ${opId}\n`);
+    for (const op of plan.operations) {
+      console.log(`  ${op.mutationKind}  ${op.targetPath}  (${formatBytes(op.estimatedBytes)})`);
+    }
+    console.log("");
+    if (manifest.status === "verified") {
+      console.log("DONE. All operations verified.");
+    } else {
+      console.log("PARTIAL. Some operations did not verify; manifest stayed at 'applied' with partialApply=true.");
+      console.log("housekeeper.interrupted_operation will surface this on next diagnose.");
+    }
+    console.log("");
+    console.log(`To roll back ALL operations: claude-housekeeper rollback ${opId}`);
+    process.exitCode = manifest.status === "verified" ? 0 : 1;
+  } catch (err) {
+    if (err instanceof BatchBudgetError) {
+      if (options.json) {
+        printJson({ error: "batch-exceeds-aggregate-budget", actual: err.actual, limit: err.limit });
+      } else {
+        fail(`Refusing batch: ${err.message}`, 2);
+      }
+      return;
+    }
+    if (err instanceof LockHeldError) {
+      if (options.json) {
+        printJson({ error: "lock-held", pid: err.lockManifest.pid, hostname: err.lockManifest.hostname });
+      } else {
+        fail(`Lock held by pid ${err.lockManifest.pid} on ${err.lockManifest.hostname} until ${err.lockManifest.stalenessAt}. If the prior run is no longer active, delete ${options.home}/housekeeper/lock and retry.`, 2);
+      }
+      return;
+    }
+    if (err instanceof PlanDriftError) {
+      if (options.json) {
+        printJson({ error: "plan-drift", expected: err.expectedHash, actual: err.actualHash });
+      } else {
+        fail("Plan drift detected: the home state changed between plan composition and execution. Re-run `clean` to pick up the latest state.", 2);
+      }
+      return;
+    }
+    if (err instanceof NotImplementedError) {
+      if (options.json) {
+        printJson({ error: "mutation-kind-not-implemented", mutationKind: err.mutationKind });
+      } else {
+        fail(`Mutation kind "${err.mutationKind}" is not implemented in batch mode.`, 2);
+      }
+      return;
+    }
+    throw err;
+  }
+}
+
 function runHarden() {
   fail("No files were changed. harden is planned, but prevention hooks must be reviewed before installation.", 2);
 }
+
+// Suppress unused-import warnings for batch budget constants surfaced for
+// downstream callers / tests.
+void BATCH_AGGREGATE_FILE_LIMIT;
+void BATCH_AGGREGATE_BYTE_LIMIT;
 
 async function runRollback(options) {
   if (!options.rollbackId) {
@@ -641,8 +804,10 @@ try {
     // Flag gate: no --confirm → dry-run, no home needed.
     console.log("DRY-RUN — pass --confirm to arm mutation.");
     process.exitCode = 0;
-  } else if (options.command === "clean" && options.confirm && !options.yes) {
-    // Flag gate: --confirm without --yes → consent refused, no home needed.
+  } else if (options.command === "clean" && options.confirm && !options.yes && !options.isBatch) {
+    // Flag gate: --confirm without --yes (single-target only) → consent refused.
+    // Batch mode falls through to runClean → runCleanBatch which prints the plan
+    // before refusing, so the user sees what would have happened.
     fail("Refusing mutation: --yes not passed. Pass --confirm --yes to skip the prompt and apply.", 2);
   } else if (options.command === "rollback" && options.rollbackId && !OPERATION_ID_PATTERN.test(options.rollbackId)) {
     fail("Invalid rollback operation id. Expected format: op_<YYYYMMDDHHMMSS>_<8hex>.", 2);
