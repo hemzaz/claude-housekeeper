@@ -1,0 +1,45 @@
+id: jsonc-settings
+purpose: |
+  Settings file uses JSONC-style comments. Per docs/design/v0.3-design.md
+  §2.2 (Q2 ruling), v0.3 refuses to round-trip JSONC through harden, but the
+  file itself is NOT broken — Claude Code may accept it. Two-phase detection
+  in audit.mjs (T-101) emits the disjoint `settings.jsonc_detected` finding
+  at `inform` stance instead of misclassifying as `settings.invalid_json`.
+mode_expectations:
+  safe:
+    claim_level: observation
+    stance: inform
+surfaces:
+  - path: ~/.claude/settings.json
+    surfaceClass: authored-config
+    ownerClass: user-owned
+    loadBearingClass: known-load-bearing
+    sensitivityClass: private-path
+    executionClass: inert
+    rollbackClass: snapshot-possible
+    scopeClass: in-scope
+evidence:
+  structural:
+    - settings.json failed strict JSON parse
+    - raw text contains `//` or `/*` comments outside string context
+  missing:
+    - pinned Claude Code citation that settings.json accepts JSONC
+finding:
+  class: orientation
+  stance: inform
+allowed_next_step: |
+  strip comments manually before invoking harden, or wait for v0.4 JSONC support
+blocked_actions:
+  - mutate settings via harden
+  - round-trip comments through snapshot
+report_expectations:
+  - emits settings.jsonc_detected at inform stance
+  - does NOT emit settings.invalid_json (two-phase detection makes them disjoint)
+  - does NOT emit settings.dependent_inference_blocked (file parses for Claude)
+harden_expectations:
+  hardenable: false
+  refusal_class: settings-jsonc-detected
+  reason: |
+    comment round-trip is unsolved; refusing to mutate JSONC preserves the
+    user's comments and avoids silent information loss (architect memo §2.4,
+    platform memo §2.4)
