@@ -324,15 +324,16 @@ block    not allowed under current evidence</pre>
               <li><strong>v0.2.0-alpha.1:</strong> snapshot-backed <code>clean --confirm --yes</code> and <code>rollback &lt;id&gt; --confirm --yes</code> for <code>plugin.cache_unreferenced</code> (outside-grace plugin cache versions). Atomic snapshot protocol, rollback dry-run plans, per-operation budget (50 files / 10 MiB), concurrency lockfile, operation manifests.</li>
               <li><strong>v0.2.0-beta.1 (Phase 9):</strong> interrupted-operation recovery via <code>rollback --abort &lt;id&gt;</code>, SessionStart hook surfacing non-terminal manifests, legacy pre-v0.2 manifest detection, and recovery hints on audit findings.</li>
               <li><strong>v0.2.0-beta.1 (Phase 10):</strong> broadened cleanable set with a <code>file-unlink</code> mutation kind. <code>housekeeper.stale_lock</code> and <code>registry.local_command_identical</code> join <code>plugin.cache_unreferenced</code> as cleanable detectors. See the <a href="https://github.com/hemzaz/claude-housekeeper/blob/main/docs/migration-v0.1-to-v0.2.md">v0.1 → v0.2 migration guide</a> and the <a href="https://github.com/hemzaz/claude-housekeeper/blob/main/docs/versioning-policy.md">versioning policy</a>.</li>
+              <li><strong>v0.3.0:</strong> <code>harden --confirm --yes</code> for guarded <code>settings.json</code> rewrite through a new <code>settings-rewrite</code> mutation kind. Three settings detectors promoted to <strong>hardenable</strong>: <code>settings.hook_path_dangling</code>, <code>settings.mcp_command_missing</code>, and <code>settings.invalid_json</code> (the last surfaces with a <code>harden</code> next-step but refuses on invocation per Q1). <code>clean --batch=&lt;n&gt;</code> aggregates multiple <code>file-unlink</code> operations under one manifest (manifest-atomic, no auto-rollback per Q3). Two-phase JSONC detection splits <code>settings.jsonc_detected</code> from <code>settings.invalid_json</code>. CI <code>version-pin</code> check guards docs/index.html against stale version drift. See the <a href="https://github.com/hemzaz/claude-housekeeper/blob/main/docs/migration-v0.2-to-v0.3.md">v0.2 → v0.3 migration guide</a>.</li>
             </ul>
           </div>
           <div>
             <strong>Roadmap</strong>
             <ul>
-              <li>More precise settings schema validation (<code>settings.invalid_json</code>, <code>settings.hook_path_dangling</code>, <code>settings.mcp_command_missing</code>)</li>
               <li>Non-interactive subagent dispatch smoketest in <code>verify</code></li>
               <li>Local learning from accepted plans and false positives</li>
-              <li><code>harden --confirm</code> for settings and hook patching (v0.3)</li>
+              <li>JSONC-aware <code>settings.json</code> rewrite (deferred to v0.4 per Q2 ruling)</li>
+              <li>Cross-kind batches that include <code>settings-rewrite</code> (deferred per C6 ruling)</li>
             </ul>
           </div>
         </div>
