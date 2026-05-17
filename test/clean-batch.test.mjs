@@ -68,8 +68,13 @@ function runCli(args) {
 
 test("T-500 CLI parser: repeated --target/--path build paired arrays", () => {
   // Use --help-after to short-circuit; we instead check via clean dry-run that
-  // mismatched pairs are rejected at parse time.
-  const result = runCli(["clean", "--confirm", "--target=a", "--path=/x", "--target=b"]);
+  // mismatched pairs are rejected at parse time. Uses known detector ids per
+  // N4 parse-time validation (notes/RELEASE-READINESS-v0.2.0.md §3).
+  const result = runCli([
+    "clean", "--confirm",
+    "--target=plugin.cache_unreferenced", "--path=/x",
+    "--target=housekeeper.stale_lock"
+  ]);
   assert.notEqual(result.status, 0);
   assert.match(result.stderr + result.stdout, /target.*path.*paired/i);
 });

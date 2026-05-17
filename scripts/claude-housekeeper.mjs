@@ -4,7 +4,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { assembleReport } from "./lib/audit.mjs";
+import { assembleReport, getKnownDetectorIds } from "./lib/audit.mjs";
 import { renderHumanReport, renderJsonReport, renderPlanReport } from "./lib/report.mjs";
 import {
   composeCleanPlan,
@@ -191,6 +191,22 @@ function parseArgs(argv) {
     }
     else if (command === "rollback" && !options.rollbackId) options.rollbackId = arg;
     else throw new Error(`Unknown argument: ${arg} — run \`claude-housekeeper --help\` for usage.`);
+  }
+
+  // N4: validate each --target= value against the known detector registry at
+  // parse time. The downstream refusal classifier still catches unknown ids
+  // (defense in depth), but a clearer error at parse time is friendlier UX
+  // per notes/RELEASE-READINESS-v0.2.0.md §3 N4. Only validated when the user
+  // actually passed --target=; bare invocations (diagnose-only) are unaffected.
+  if (options.targets.length > 0) {
+    const known = new Set(getKnownDetectorIds());
+    for (const t of options.targets) {
+      if (!known.has(t)) {
+        throw new Error(
+          `Unknown --target value: ${t}. Known detector ids: ${getKnownDetectorIds().join(", ")}.`
+        );
+      }
+    }
   }
 
   // T-500: pair --target/--path arrays into options.pairs. Single-pair callers

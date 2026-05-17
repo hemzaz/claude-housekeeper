@@ -188,6 +188,16 @@ function selectedDetectors(scope) {
   return new Set([...SCOPE_TO_DETECTORS[scope], ...ALWAYS_ON_DETECTORS]);
 }
 
+// N4: known detector id registry for --target= parse-time validation.
+// Sourced from SCOPE_TO_DETECTORS ∪ ALWAYS_ON_DETECTORS so this stays in
+// lockstep with whatever assembleReport actually runs. Sorted for stable
+// error messages.
+export function getKnownDetectorIds() {
+  const ids = new Set([...ALWAYS_ON_DETECTORS]);
+  for (const list of Object.values(SCOPE_TO_DETECTORS)) for (const id of list) ids.add(id);
+  return [...ids].sort();
+}
+
 // ---------- finding assembly (T-202) ----------
 
 function buildFinding(raw, { home, mode, policyMatchesFor }) {

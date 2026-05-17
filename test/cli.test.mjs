@@ -98,6 +98,27 @@ test("--yes appears in help text with consent-gate wording", () => {
   assert.match(result.stdout, /no-stdin convention/);
 });
 
+// ── N4: --target= parse-time validation ──────────────────────────────────────
+// Per notes/RELEASE-READINESS-v0.2.0.md §3 N4: unknown --target values should
+// fail at parse time with a helpful "Known detector ids: …" message rather
+// than only failing later inside composeCleanPlan's refusal classifier.
+
+test("N4: --target=<unknown> exits non-zero with helpful 'Known detector ids' error", () => {
+  const result = runCli(["clean", "--confirm", "--yes", "--target=plugin.bogus", "--path=/x"]);
+  assert.notEqual(result.status, 0, `expected non-zero exit, got ${result.status}`);
+  assert.match(result.stderr, /Unknown --target value: plugin\.bogus/);
+  assert.match(result.stderr, /Known detector ids:/);
+  // The message should list at least one real id so users can self-correct.
+  assert.match(result.stderr, /plugin\.cache_unreferenced/);
+});
+
+test("N4: --target=plugin.cache_unreferenced parses fine (no parse error)", () => {
+  // Without --path the pair check will fail later, but the --target value
+  // itself should NOT trigger the N4 parse-time validation error.
+  const result = runCli(["clean", "--confirm", "--yes", "--target=plugin.cache_unreferenced"]);
+  assert.doesNotMatch(result.stderr, /Unknown --target value/);
+});
+
 test("clean (no flags) exits 0 with DRY-RUN message and --confirm hint", () => {
   // No home needed: flag gate fires before existsSync check.
   const result = runCli(["clean"]);
