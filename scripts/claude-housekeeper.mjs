@@ -4,7 +4,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { assembleReport } from "./lib/audit.mjs";
+import { assembleReport, KNOWN_DETECTORS } from "./lib/audit.mjs";
 import { renderHumanReport, renderJsonReport, renderPlanReport } from "./lib/report.mjs";
 import {
   composeCleanPlan,
@@ -201,6 +201,19 @@ function parseArgs(argv) {
     throw new Error(
       `--target and --path must be paired (got ${options.targets.length} target(s) and ${options.paths.length} path(s)).`
     );
+  }
+
+  // N4 per notes/RELEASE-READINESS-v0.2.0.md §3: reject unknown --target ids at
+  // parse time so the user sees the list of valid detectors immediately rather
+  // than a downstream refusal classifier message. Runs AFTER the pair check so
+  // structural errors (mismatched array lengths) still surface first.
+  for (const target of options.targets) {
+    if (!KNOWN_DETECTORS.has(target)) {
+      const known = [...KNOWN_DETECTORS].sort().join(", ");
+      throw new Error(
+        `Unknown --target=${target}. Valid detector ids: ${known}.`
+      );
+    }
   }
   options.pairs = options.targets.map((t, i) => ({ target: t, path: options.paths[i] }));
   if (options.targets.length === 1) {

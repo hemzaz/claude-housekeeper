@@ -1,5 +1,9 @@
 # Claude Housekeeper
 
+[![CI](https://github.com/hemzaz/claude-housekeeper/actions/workflows/ci.yml/badge.svg)](https://github.com/hemzaz/claude-housekeeper/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![npm version](https://img.shields.io/npm/v/claude-housekeeper.svg)](https://www.npmjs.com/package/claude-housekeeper)
+
 Safe Claude Code home inspection and guarded cleanup for broken hooks,
 plugin cache drift, and protected local state.
 
@@ -373,3 +377,53 @@ CLAUDE_HOME=/path/to/.claude scripts/soak.sh
 The script PASSes when no stop conditions trigger (`filesChanged: true`
 in any read-only output, schemaVersion drift, malformed op id, empty
 refusal message) and exits 2 if any do.
+
+## FAQ
+
+**Why does `clean` refuse my obvious orphan plugin?**
+Claude Code itself removes orphaned plugin cache versions about seven days
+after they fall out of the registry (see
+[`docs/loader-semantics.md`](docs/loader-semantics.md) §2 + §7). Housekeeper
+honors the same grace window. Inside the seven days, the directory is still
+in the loader's recovery path; `plugin.expected_orphan` surfaces it as
+`watch`, not `cleanable`. Once the grace expires the same directory
+re-surfaces as `plugin.cache_unreferenced` and `clean` will act on it.
+
+**Can I undo a rollback?**
+No. `rollback <id> --confirm --yes` is terminal — once it completes, the
+operation manifest moves to `rolled_back` and the snapshot is kept only for
+garbage collection. The "rollback the rollback" path does not exist by
+design; the snapshot exists to undo a `clean`, not to undo a restore.
+
+**What if I lose `<home>/.claude/housekeeper/`?**
+Operation history is gone, but no live Claude data is affected (operations
+live in their own directory tree). `diagnose`/`plan`/`verify` keep working
+as read-only inspectors. `clean` and `rollback` refuse to operate without
+snapshot proof, which is the conservative behavior — you cannot
+accidentally re-apply or undo something whose manifest no longer exists.
+
+**Why doesn't `harden` hot-reload Claude?**
+Claude Code does not document a hot-reload protocol for `settings.json`.
+After `harden --confirm --yes` rewrites the file, exit and restart any
+running Claude session for the new settings to take effect.
+
+**Why does `clean --batch=<n>` refuse `settings-rewrite`?**
+v0.3 batching covers the `file-unlink` mutation kind only (C6 ruling, see
+[`docs/migration-v0.2-to-v0.3.md`](docs/migration-v0.2-to-v0.3.md)).
+Settings rewrites need their own snapshot + pre-apply check per file and
+do not share a manifest with unlinks. Use `harden --confirm --yes` for
+each `settings.hook_path_dangling` / `settings.mcp_command_missing`
+finding individually.
+
+**When will JSONC be supported?**
+v0.4 will revisit JSONC parsing per the Q2 ruling. v0.3 splits
+`settings.jsonc_detected` from `settings.invalid_json` so JSONC files
+surface cleanly as a separate finding, but they are not yet hardenable.
+
+**Why is v0.3 only three detectors hardenable?**
+Phase 3 of v0.3 deliberately promoted the safest, most reversible
+settings detectors first (`settings.hook_path_dangling`,
+`settings.mcp_command_missing`, `settings.invalid_json`). Detectors with
+intent-laden choices (which duplicate to keep, which diverged file is
+authoritative) stay surface-only — see the table under
+[Current Checks](#current-checks) for the full per-detector status.

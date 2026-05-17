@@ -114,6 +114,36 @@ test("clean --confirm (no --yes) exits 2 with Refusing mutation message", () => 
   assert.match(result.stderr, /--yes/);
 });
 
+// N4 per notes/RELEASE-READINESS-v0.2.0.md §3: --target=<id> is validated at
+// parse time. Unknown ids fail fast with the full list of valid detector ids;
+// known ids parse without complaint and proceed to the regular flag checks.
+
+test("clean --target=<unknown> fails fast at parse time with valid id list", () => {
+  const result = runCli([
+    "clean",
+    "--confirm",
+    "--yes",
+    "--target=not.a.real.detector",
+    "--path=/tmp/whatever"
+  ]);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Unknown --target=not\.a\.real\.detector/);
+  assert.match(result.stderr, /plugin\.cache_unreferenced/);
+});
+
+test("clean --target=<known> parses OK and reaches downstream gates", () => {
+  // We use a fake --path so the parse step succeeds; downstream the surface
+  // will refuse, but the parse-time validator must NOT have fired.
+  const result = runCli([
+    "clean",
+    "--confirm",
+    "--yes",
+    "--target=plugin.cache_unreferenced",
+    "--path=/nonexistent/cache/version"
+  ]);
+  assert.doesNotMatch(result.stderr, /Unknown --target/);
+});
+
 // ── T-704 clean handler wiring tests ─────────────────────────────────────────
 
 /**
