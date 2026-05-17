@@ -1,5 +1,9 @@
 # Claude Housekeeper
 
+[![CI](https://github.com/hemzaz/claude-housekeeper/actions/workflows/ci.yml/badge.svg)](https://github.com/hemzaz/claude-housekeeper/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![npm version](https://img.shields.io/npm/v/claude-housekeeper.svg)](https://www.npmjs.com/package/claude-housekeeper)
+
 Safe Claude Code home inspection and guarded cleanup for broken hooks,
 plugin cache drift, and protected local state.
 
@@ -373,3 +377,65 @@ CLAUDE_HOME=/path/to/.claude scripts/soak.sh
 The script PASSes when no stop conditions trigger (`filesChanged: true`
 in any read-only output, schemaVersion drift, malformed op id, empty
 refusal message) and exits 2 if any do.
+
+## FAQ
+
+**Why does `clean` refuse my obvious orphan plugin?**
+A plugin cache directory must be outside the 7-day grace window before
+`plugin.cache_unreferenced` is even emitted. The grace window protects
+against transient registry edits — a plugin reinstall, a marketplace
+refresh, or an in-flight `claude plugin install` that has not yet
+written its registry entry can briefly look like an orphan. If you
+need to remove a cache version inside the grace window, do it manually
+with `rm -rf` and accept the small risk that Claude rewrites it on
+next start.
+
+**Can I undo a rollback?**
+No. Rollback is terminal — once an operation manifest reaches
+`rolled_back` status, Housekeeper will not re-apply the change. The
+snapshot tree is retained for garbage collection but cannot be
+re-promoted. If you need the change again, re-run the original
+`clean` or `harden` command and accept it as a new operation.
+
+**What if I lose `<home>/.claude/housekeeper/`?**
+Your operation history is gone, but no live Claude data is affected.
+`clean`, `harden`, and `rollback` will refuse to operate without a
+valid snapshot tree, so the worst case is "future mutations require a
+fresh snapshot." Existing plugins, settings, and registry state are
+not stored under `housekeeper/` and remain intact.
+
+**Why doesn't `harden` hot-reload Claude?**
+Claude Code does not document hot-reload of `settings.json`. A
+successful `harden --confirm --yes` prints a `RELOAD HINT` block
+reminding you to restart your Claude session for the rewrite to take
+effect. Restarting is the only supported way to pick up settings
+changes.
+
+**Why does `clean --batch` refuse `settings-rewrite` operations?**
+The `settings-rewrite` mutation kind has stronger pre-apply guarantees
+than `file-unlink` (strict JSON, idempotency check, no JSONC
+round-trip) and a different rollback shape (copy-back vs unlink-undo).
+Mixing the two under one batch manifest would weaken both contracts.
+Use `harden --confirm --yes` for settings rewrites; use
+`clean --batch` for grouped `file-unlink` operations.
+
+**When will JSONC `settings.json` be supported?**
+Deferred to v0.4 per the Q2 ruling. v0.3 detects JSONC via
+`settings.jsonc_detected` at `inform` stance but refuses to
+round-trip comments through `settings-rewrite`. The v0.4 revisit
+will evaluate comment-preserving tokenizers and either ship a
+JSONC-aware rewriter or document the limitation as permanent.
+
+**Why is v0.3 only three detectors hardenable?**
+Phase 3 promoted the safest set: `settings.hook_path_dangling`,
+`settings.mcp_command_missing`, and `settings.invalid_json` (the
+last surfaces with a `harden` next-step but refuses on invocation
+per Q1 — see [`docs/migration-v0.2-to-v0.3.md`](docs/migration-v0.2-to-v0.3.md)).
+The v0.4 learning loop will broaden the hardenable set based on
+soak evidence and false-positive feedback.
+
+**Where do I file a bug or false-positive?**
+Use the issue templates under
+[`.github/ISSUE_TEMPLATE/`](.github/ISSUE_TEMPLATE/). Five templates
+cover false-positive findings, loader-semantics drift, compatibility
+matrix gaps, damaged-environment recovery, and cleanup requests.
