@@ -3,11 +3,10 @@
 Date: 2026-05-17. Companion to `notes/TASKBOARD-v0.4.md`.
 
 Predecessor: `notes/PLAN-v0.3.md` — v0.3 shipped `harden --confirm --yes`,
-the `settings-rewrite` mutation kind, `clean --batch`, two-phase JSONC
+`settings-rewrite` mutation kind, `clean --batch`, two-phase JSONC
 detection, and promoted three settings detectors to `hardenable`. v0.4
-builds on that and addresses the six deferrals enumerated in
-`docs/design/v0.3-design.md §1` plus three carry-over N-items from
-`notes/RELEASE-READINESS-v0.2.0.md §3`.
+addresses the six deferrals in `docs/design/v0.3-design.md §1` plus
+three carry-over N-items from `notes/RELEASE-READINESS-v0.2.0.md §3`.
 
 ---
 
