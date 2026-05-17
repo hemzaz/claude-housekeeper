@@ -1,0 +1,92 @@
+name: Release
+
+# N1 (notes/RELEASE-READINESS-v0.2.0.md §3): release-tagging automation.
+# Triggered on push of a v*.*.* tag. Verifies the tag passes tests and
+# `npm pack --dry-run`, then attaches the packed tarball to the GitHub
+# release for that tag, creating the release if it does not already
+# exist. Release notes are pulled from the CHANGELOG.md section that
+# matches the tag (Keep a Changelog format: `## [<version>]`).
+#
+# This workflow intentionally does NOT publish to npm — the user has
+# explicitly deferred npm publish per notes/RELEASE-READINESS-v0.2.0.md
+# §7.
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Pack and attach to GitHub release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Verify tag matches package.json version
+        id: version
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#v}"
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+          if [ "$VERSION" != "$PKG_VERSION" ]; then
+            echo "::error::Tag $TAG does not match package.json version $PKG_VERSION"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund || npm install --no-audit --no-fund
+
+      - name: Run tests
+        run: npm test
+
+      - name: Verify tarball shape (npm pack --dry-run)
+        run: npm --cache "$RUNNER_TEMP/npm-cache" pack --dry-run
+
+      - name: Pack tarball
+        id: pack
+        run: |
+          TARBALL="$(npm --cache "$RUNNER_TEMP/npm-cache" pack --silent)"
+          echo "tarball=$TARBALL" >> "$GITHUB_OUTPUT"
+
+      - name: Extract CHANGELOG section for tag
+        id: notes
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          NOTES_FILE="$RUNNER_TEMP/release-notes.md"
+          awk -v ver="$VERSION" '
+            $0 ~ "^## \\[" ver "\\]" { flag=1; next }
+            flag && /^## \[/ { flag=0 }
+            flag { print }
+          ' CHANGELOG.md > "$NOTES_FILE"
+          if [ ! -s "$NOTES_FILE" ]; then
+            echo "::warning::No CHANGELOG section found for v$VERSION; release will have empty notes."
+            echo "Release v$VERSION" > "$NOTES_FILE"
+          fi
+          echo "path=$NOTES_FILE" >> "$GITHUB_OUTPUT"
+
+      - name: Create or update GitHub release with tarball
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          TARBALL="${{ steps.pack.outputs.tarball }}"
+          NOTES="${{ steps.notes.outputs.path }}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG exists; uploading tarball as asset."
+            gh release upload "$TAG" "$TARBALL" --clobber
+          else
+            echo "Release $TAG missing; creating with tarball and notes."
+            gh release create "$TAG" "$TARBALL" --title "$TAG" --notes-file "$NOTES"
+          fi
