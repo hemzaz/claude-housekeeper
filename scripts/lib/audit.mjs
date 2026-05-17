@@ -78,6 +78,17 @@ const ALWAYS_ON_DETECTORS = new Set([
   "home.clean"
 ]);
 
+// N4 per notes/RELEASE-READINESS-v0.2.0.md §3: parse-time validation of
+// `--target=<id>`. Union of every detector id the audit pipeline can emit,
+// sourced directly from SCOPE_TO_DETECTORS + ALWAYS_ON_DETECTORS so this
+// stays in sync without a parallel list.
+export const KNOWN_DETECTORS = Object.freeze(
+  new Set([
+    ...Object.values(SCOPE_TO_DETECTORS).flat(),
+    ...ALWAYS_ON_DETECTORS
+  ])
+);
+
 // ---------- entry points ----------
 
 export function auditClaudeHome(home, options = {}) {

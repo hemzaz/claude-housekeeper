@@ -1,0 +1,80 @@
+name: Release
+
+# N1 per notes/RELEASE-READINESS-v0.2.0.md §3: fires on push of a `v*.*.*` tag,
+# runs the full test suite, packs the tarball, and creates / updates a GitHub
+# release with notes extracted from the matching CHANGELOG.md section.
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Tag-driven release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Resolve version from tag
+        id: ver
+        run: |
+          REF_NAME="${GITHUB_REF_NAME}"
+          VERSION="${REF_NAME#v}"
+          echo "ref=$REF_NAME" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+      - name: Sanity-check tag matches package.json
+        run: |
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+          if [ "$PKG_VERSION" != "${{ steps.ver.outputs.version }}" ]; then
+            echo "::error::tag ${{ steps.ver.outputs.ref }} does not match package.json version $PKG_VERSION"
+            exit 1
+          fi
+      - run: npm ci || npm install --no-audit --no-fund
+      - run: npm test
+      - name: Pack tarball
+        id: pack
+        run: |
+          npm --cache "$RUNNER_TEMP/npm-cache" pack --dry-run
+          TARBALL="$(npm --cache "$RUNNER_TEMP/npm-cache" pack | tail -n 1)"
+          echo "tarball=$TARBALL" >> "$GITHUB_OUTPUT"
+      - name: Extract CHANGELOG section
+        id: notes
+        run: |
+          VERSION="${{ steps.ver.outputs.version }}"
+          NOTES_FILE="$RUNNER_TEMP/release-notes.md"
+          if [ -f CHANGELOG.md ]; then
+            awk -v ver="$VERSION" '
+              /^## \[/ {
+                if (flag) { exit }
+                if ($0 ~ "\\[" ver "\\]") { flag=1; next }
+              }
+              flag { print }
+            ' CHANGELOG.md > "$NOTES_FILE"
+          fi
+          if [ ! -s "$NOTES_FILE" ]; then
+            echo "Release ${{ steps.ver.outputs.ref }}" > "$NOTES_FILE"
+            echo "" >> "$NOTES_FILE"
+            echo "No CHANGELOG entry found for $VERSION." >> "$NOTES_FILE"
+          fi
+          echo "file=$NOTES_FILE" >> "$GITHUB_OUTPUT"
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          REF="${{ steps.ver.outputs.ref }}"
+          TARBALL="${{ steps.pack.outputs.tarball }}"
+          NOTES="${{ steps.notes.outputs.file }}"
+          if gh release view "$REF" >/dev/null 2>&1; then
+            gh release upload "$REF" "$TARBALL" --clobber
+            gh release edit "$REF" --notes-file "$NOTES"
+          else
+            gh release create "$REF" "$TARBALL" --title "$REF" --notes-file "$NOTES"
+          fi
