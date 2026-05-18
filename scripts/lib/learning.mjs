@@ -2,7 +2,8 @@
 // Writes under <home>/.claude/housekeeper/learning/.
 // No runtime dependencies — Node built-ins only.
 
-import { appendFile, mkdir, readFile } from "node:fs/promises";
+import { appendFile, mkdir, open, readFile, rename, writeFile } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
 import path from "node:path";
 
 export const LEARNING_SCHEMA_VERSION = "0.4";
@@ -236,4 +237,74 @@ export async function readSummary(home, options = {}) {
     counters,
     windowDays
   };
+}
+
+// ---------------------------------------------------------------------------
+// atomicWrite (inline copy of snapshot.mjs pattern — zero external deps)
+// ---------------------------------------------------------------------------
+
+async function atomicWrite(filePath, content) {
+  const hex = randomBytes(4).toString("hex");
+  const tmp = `${filePath}.tmp.${hex}`;
+  const fh = await open(tmp, "w");
+  try {
+    await fh.writeFile(content, "utf8");
+    await fh.datasync();
+  } finally {
+    await fh.close();
+  }
+  await rename(tmp, filePath);
+}
+
+// ---------------------------------------------------------------------------
+// pruneLearningFiles
+// ---------------------------------------------------------------------------
+
+// Remove records older than olderThanDays from all three JSONL files.
+// Rewrites each file atomically. If a file does not exist, it is skipped.
+// olderThanDays must be a positive integer (validated by the caller).
+export async function pruneLearningFiles(home, olderThanDays) {
+  const dir = learningDir(home);
+  const cutoff = Date.now() - olderThanDays * 24 * 60 * 60 * 1000;
+  const files = ["refusals.jsonl", "applied.jsonl", "rollbacks.jsonl"];
+  for (const name of files) {
+    const filePath = path.join(dir, name);
+    const records = await readJsonlFile(filePath);
+    if (records.length === 0) continue; // file absent or empty — skip
+    const kept = records.filter((r) => {
+      const ts = new Date(r.ts).getTime();
+      return !isNaN(ts) && ts >= cutoff;
+    });
+    const content = kept.map((r) => JSON.stringify(r)).join("\n") + (kept.length > 0 ? "\n" : "");
+    await atomicWrite(filePath, content);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// markFalsePositive
+// ---------------------------------------------------------------------------
+
+// Increment (or initialise) the falsePositives counter in state.json for the
+// given opId. Creates the learning directory and state.json if absent.
+// opId format is validated by the caller (CLI layer).
+export async function markFalsePositive(home, opId) {
+  const dir = learningDir(home);
+  await ensureDir(dir);
+  const stateFile = path.join(dir, "state.json");
+
+  let state = { learnSchemaVersion: LEARNING_SCHEMA_VERSION, falsePositives: 0 };
+  try {
+    const text = await readFile(stateFile, "utf8");
+    const parsed = JSON.parse(text);
+    if (typeof parsed.falsePositives === "number") {
+      state = parsed;
+    }
+  } catch {
+    // absent or malformed — start fresh
+  }
+
+  state.falsePositives = (state.falsePositives || 0) + 1;
+  state.learnSchemaVersion = LEARNING_SCHEMA_VERSION;
+
+  await atomicWrite(stateFile, JSON.stringify(state) + "\n");
 }

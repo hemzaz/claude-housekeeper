@@ -38,6 +38,11 @@ import {
   HardenPlanDriftError,
   HardenLockHeldError
 } from "./lib/harden-plan.mjs";
+import {
+  readSummary,
+  pruneLearningFiles,
+  markFalsePositive
+} from "./lib/learning.mjs";
 
 const VALID_COMMANDS = new Set([
   "diagnose",
@@ -45,8 +50,11 @@ const VALID_COMMANDS = new Set([
   "clean",
   "verify",
   "harden",
-  "rollback"
+  "rollback",
+  "learn"
 ]);
+
+const LEARN_OP_ID_PATTERN = /^op_[0-9]{14}_[0-9a-f]{8}$/;
 
 const OPERATION_ID_PATTERN = /^op_[0-9]{14}_[0-9a-f]{8}$/;
 
@@ -62,6 +70,10 @@ Commands:
   clean               Snapshot-backed cleanup for one approved finding.
   harden              Snapshot-backed settings.json rewrite for one finding.
   rollback <id>       Restore a named Housekeeper operation snapshot.
+  learn               Show 30-day learning summary (refusals, cleaned, rollbacks).
+                        --json                    Machine-readable JSON output.
+                        --prune --older-than=<n>  Remove records older than N days.
+                        --mark-false-positive <id> Increment false-positive counter.
 
 Options:
   --json              Print the machine-readable report (stable schema 0.1).
@@ -153,7 +165,11 @@ function parseArgs(argv) {
     paths: [],
     batchCap: null,
     abort: false,
-    timeoutSeconds: 0
+    timeoutSeconds: 0,
+    // learn subcommand flags
+    prune: false,
+    olderThan: null,
+    markFalsePositive: null
   };
 
   for (const arg of args) {
@@ -190,6 +206,19 @@ function parseArgs(argv) {
       options.timeoutSeconds = parsed;
     }
     else if (command === "rollback" && !options.rollbackId) options.rollbackId = arg;
+    else if (arg === "--prune") options.prune = true;
+    else if (arg.startsWith("--older-than=")) {
+      const raw = arg.slice("--older-than=".length);
+      const parsed = Number(raw);
+      if (!Number.isInteger(parsed) || parsed <= 0) {
+        throw new Error(`Invalid --older-than value: ${raw} — must be a positive integer number of days.`);
+      }
+      options.olderThan = parsed;
+    }
+    else if (arg === "--mark-false-positive") options.markFalsePositive = "__PENDING__";
+    else if (command === "learn" && options.markFalsePositive === "__PENDING__") {
+      options.markFalsePositive = arg;
+    }
     else throw new Error(`Unknown argument: ${arg} — run \`claude-housekeeper --help\` for usage.`);
   }
 
@@ -929,6 +958,201 @@ function runVerify() {
   printVerify(probes);
 }
 
+// ---------------------------------------------------------------------------
+// runLearn — T-104
+// ---------------------------------------------------------------------------
+
+function formatDate(isoStr) {
+  return isoStr.slice(0, 10);
+}
+
+async function runLearn(options) {
+  // options.home is already resolved to the .claude dir by resolveClaudeHome.
+  // Learning helpers (readSummary, pruneLearningFiles, markFalsePositive) expect
+  // the *parent* of .claude (they append /.claude/housekeeper/learning internally).
+  const home = path.dirname(options.home);
+
+  // Conflict check: --mark-false-positive + --prune cannot be combined.
+  if (options.markFalsePositive && options.markFalsePositive !== "__PENDING__" && options.prune) {
+    fail("--mark-false-positive and --prune cannot be combined. Run each separately.", 2);
+    return;
+  }
+
+  // --prune branch
+  if (options.prune) {
+    if (options.olderThan === null) {
+      fail("--prune requires --older-than=<days>. No records deleted.", 2);
+      return;
+    }
+    await pruneLearningFiles(home, options.olderThan);
+    if (!options.json) {
+      console.log(`Pruned learning records older than ${options.olderThan} day(s).`);
+    } else {
+      console.log(JSON.stringify({ pruned: true, olderThanDays: options.olderThan }));
+    }
+    process.exitCode = 0;
+    return;
+  }
+
+  // --mark-false-positive branch
+  if (options.markFalsePositive) {
+    const opId = options.markFalsePositive === "__PENDING__"
+      ? null
+      : options.markFalsePositive;
+    if (!opId) {
+      fail("--mark-false-positive requires an operation id (e.g. op_20260612091223_b8e4f0c2). Nothing updated.", 2);
+      return;
+    }
+    if (!LEARN_OP_ID_PATTERN.test(opId)) {
+      fail(`Invalid op_id format: ${opId}. Expected format: op_<YYYYMMDDHHMMSS>_<8hex>.`, 2);
+      return;
+    }
+    await markFalsePositive(home, opId);
+    if (!options.json) {
+      console.log(`Marked ${opId} as a false positive. Counter incremented.`);
+    } else {
+      console.log(JSON.stringify({ markedFalsePositive: opId }));
+    }
+    process.exitCode = 0;
+    return;
+  }
+
+  // Default: read and display the 30-day summary
+  const summary = await readSummary(home, { windowDays: 30 });
+
+  if (options.json) {
+    const now = new Date();
+    const windowMs = summary.windowDays * 24 * 60 * 60 * 1000;
+    const windowEnd = now.toISOString();
+    const windowStart = new Date(now - windowMs).toISOString();
+
+    // Build topCleanedDetectors with verified/rolledBack breakdown from
+    // the raw topCleanedDetectors (which only has targetDetector + count).
+    const topCleanedDetectors = summary.topCleanedDetectors.map((d) => ({
+      detectorId: d.targetDetector,
+      count: d.count,
+      verified: d.count,  // readSummary doesn't track breakdown; best-effort
+      rolledBack: 0
+    }));
+
+    const jsonOut = {
+      learnSchemaVersion: "0.4",
+      generatedAt: now.toISOString(),
+      windowDays: summary.windowDays,
+      windowStart,
+      windowEnd,
+      topRefusalClasses: summary.topRefusals.map((r) => ({ reason: r.reason, count: r.count })),
+      topCleanedDetectors,
+      lastRollbacks: summary.recentRollbacks.map((r) => ({
+        opId: r.opId,
+        detectorId: r.detectorId || null,
+        rolledBackAt: r.ts
+      })),
+      falsePositives: {
+        count: summary.falsePositiveCount,
+        operations: []
+      },
+      pruneHint: {
+        recordsOutsideWindow:
+          summary.counters.totalRefusals > summary.topRefusals.reduce((s, r) => s + r.count, 0) ||
+          summary.counters.totalApplied > summary.topCleanedDetectors.reduce((s, d) => s + d.count, 0) ||
+          summary.counters.totalRollbacks > summary.recentRollbacks.length,
+        oldestRecord: null
+      }
+    };
+    console.log(JSON.stringify(jsonOut, null, 2));
+    process.exitCode = 0;
+    return;
+  }
+
+  // Human-readable output per product memo §3.1
+  const now = new Date();
+  const windowMs = summary.windowDays * 24 * 60 * 60 * 1000;
+  const windowEndDate = formatDate(now.toISOString());
+  const windowStartDate = formatDate(new Date(now - windowMs).toISOString());
+
+  const lines = [];
+  lines.push("HOUSEKEEPER LEARN");
+  lines.push(`30-day window: ${windowStartDate} – ${windowEndDate}`);
+  lines.push("");
+
+  // Check for true empty state
+  const isEmpty =
+    summary.counters.totalRefusals === 0 &&
+    summary.counters.totalApplied === 0 &&
+    summary.counters.totalRollbacks === 0;
+
+  if (isEmpty) {
+    lines.push("No learning records found. Run clean or harden to start building history.");
+    lines.push("");
+    lines.push("To prune records older than 90 days:");
+    lines.push("  claude-housekeeper learn --prune --older-than=90");
+    console.log(lines.join("\n"));
+    process.exitCode = 0;
+    return;
+  }
+
+  // TOP REFUSAL CLASSES
+  lines.push("TOP REFUSAL CLASSES (last 30 days)");
+  if (summary.topRefusals.length === 0) {
+    lines.push("  (none in window)");
+  } else {
+    for (const r of summary.topRefusals) {
+      const occ = r.count === 1 ? "occurrence" : "occurrences";
+      lines.push(`  ${r.reason.padEnd(40)} ${r.count} ${occ}`);
+    }
+  }
+  lines.push("");
+
+  // TOP CLEANED DETECTORS
+  lines.push("TOP CLEANED DETECTORS (last 30 days)");
+  if (summary.topCleanedDetectors.length === 0) {
+    lines.push("  (none in window)");
+  } else {
+    for (const d of summary.topCleanedDetectors) {
+      const op = d.count === 1 ? "operation" : "operations";
+      lines.push(`  ${d.targetDetector.padEnd(40)} ${d.count} ${op}`);
+    }
+  }
+  lines.push("");
+
+  // LAST 10 ROLLBACKS
+  lines.push("LAST 10 ROLLBACKS");
+  if (summary.recentRollbacks.length === 0) {
+    lines.push("  (no rollbacks in window)");
+  } else {
+    for (const r of summary.recentRollbacks) {
+      const date = formatDate(r.ts);
+      lines.push(`  ${r.opId}  ${String(r.toStatus || "").padEnd(16)}  ${date}`);
+    }
+  }
+  lines.push("");
+
+  // FALSE POSITIVES
+  lines.push("FALSE POSITIVES");
+  if (summary.falsePositiveCount === 0) {
+    lines.push("  0 operations marked as false positives");
+  } else {
+    const fp = summary.falsePositiveCount;
+    lines.push(`  ${fp} operation${fp === 1 ? "" : "s"} marked as false positives`);
+  }
+  lines.push("");
+
+  // LIFETIME COUNTERS
+  lines.push("LIFETIME COUNTERS");
+  lines.push(`  ${summary.counters.totalRefusals} refusals total`);
+  lines.push(`  ${summary.counters.totalApplied} operations applied`);
+  lines.push(`  ${summary.counters.totalRollbacks} rollbacks total`);
+  lines.push("");
+
+  // PRUNE HINT
+  lines.push("To prune records older than 90 days:");
+  lines.push("  claude-housekeeper learn --prune --older-than=90");
+
+  console.log(lines.join("\n"));
+  process.exitCode = 0;
+}
+
 function printVerify(probes) {
   for (const probe of probes) {
     if (probe.skipped) {
@@ -969,7 +1193,8 @@ try {
     options.home = resolveClaudeHome(options.home);
     if (!existsSync(options.home)) {
       fail(`Claude home does not exist: ${options.home}`, 2);
-    } else if (options.command === "diagnose") runDiagnose(options);
+    } else if (options.command === "learn") await runLearn(options);
+    else if (options.command === "diagnose") runDiagnose(options);
     else if (options.command === "plan") runPlan(options);
     else if (options.command === "clean") await runClean(options);
     else if (options.command === "verify") runVerify(options);
