@@ -14,7 +14,7 @@
 
 import { createHash } from "node:crypto";
 import { copyFile } from "node:fs/promises";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { join, dirname, sep as pathSep } from "node:path";
 import { assembleReport, hasJsonComments } from "./audit.mjs";
 import {
@@ -89,8 +89,38 @@ const NEXT_STEP_BY_REASON = Object.freeze({
   "no-mutation-mapping-in-v0.3":
     "Not hardenable in v0.3. Track the roadmap in CHANGELOG.md; edit settings.json by hand if you accept the risk.",
   "no-finding-for-target":
-    "No finding for the requested target/path. Run `claude-housekeeper diagnose` to see current findings, then pick a hardenable one."
+    "No finding for the requested target/path. Run `claude-housekeeper diagnose` to see current findings, then pick a hardenable one.",
+  // T-202 — MCP rewrite refusal classes
+  "mcp-rewrite-target-missing":
+    "Confirm the correct path to your MCP server binary or script, then re-run harden with the corrected --mcp-command-rewrite value.",
+  "mcp-rewrite-target-not-executable":
+    "Run chmod +x <new-path> and then re-run harden, or confirm you have passed the correct path.",
+  "mcp-rewrite-source-not-found":
+    "Run diagnose to see the exact command path recorded in the failing MCP entry, then pass that exact string as the source side of --mcp-command-rewrite=<source>=<new-path>."
 });
+
+// ── T-200: parseMcpCommandRewrite ─────────────────────────────────────────────
+//
+// Parses a `--mcp-command-rewrite=<old>=<new>` flag value. Splits on the FIRST
+// `=` so the new path may contain `=` characters. Both sides must be non-empty.
+// Throws on malformed input (error surfaces as parse-time refusal per T-200).
+
+export function parseMcpCommandRewrite(value) {
+  const eqIdx = value.indexOf("=");
+  if (eqIdx === -1) {
+    throw new Error(
+      `--mcp-command-rewrite requires the format <old-path>=<new-path>. Got: "${value}"`
+    );
+  }
+  const oldPath = value.slice(0, eqIdx);
+  const newPath = value.slice(eqIdx + 1);
+  if (!oldPath || !newPath) {
+    throw new Error(
+      `--mcp-command-rewrite: both <old-path> and <new-path> must be non-empty. Got: "${value}"`
+    );
+  }
+  return { oldPath, newPath };
+}
 
 function nextStepFor(reason) {
   return NEXT_STEP_BY_REASON[reason] || "";
@@ -234,6 +264,34 @@ function buildMcpCommandMissingPatch(finding) {
 // outcome required by design §2.1.
 function buildInvalidJsonSentinel(finding) {
   void finding;
+  return buildIdentityMarkerPatch();
+}
+
+// T-201 — MCP rewrite patch builder.
+//
+// Returns a `set` patch on ["mcpServers", <name>, "command"] replacing the
+// broken command with the validated new path. Per design §3.2 P2 and
+// constraint: "patch shape is {op: 'set', path: ['mcpServers', '<name>',
+// 'command'], value: '<new-path>'}". A `set` patch is idempotent by the
+// MUTATION_REGISTRY preApply invariant (second apply yields identical object).
+function buildMcpCommandRewritePatch(finding, newPath) {
+  const parsed = parseSettingsSync(finding.targetPath);
+  if (!parsed || typeof parsed !== "object" || !parsed.mcpServers) {
+    return buildIdentityMarkerPatch();
+  }
+  // Find the server whose command matches the finding. The finding's evidence
+  // carries the broken command; we match against the live settings.json to
+  // ensure the patch targets the right server name.
+  for (const [name, server] of Object.entries(parsed.mcpServers)) {
+    if (!server || typeof server !== "object") continue;
+    const command = typeof server.command === "string" ? server.command : "";
+    if (command && command.startsWith("/") && !existsSync(command)) {
+      // This is a broken entry — use its server name for the patch.
+      return { op: "set", path: ["mcpServers", name, "command"], value: newPath };
+    }
+  }
+  // No broken entry found; identity patch lets preApply surface an appropriate
+  // refusal via the standard JSON-validation path.
   return buildIdentityMarkerPatch();
 }
 
@@ -461,6 +519,111 @@ export async function composeHardenPlan(home, options = {}) {
         exitCode: 2
       });
       await safeAppendRefusal(home, finding.id, "settings-network-filesystem", tp);
+      continue;
+    }
+
+    // T-201/T-202 — MCP rewrite mode: when options.mcpCommandRewrite is set,
+    // run the three pre-snapshot refusal checks then build a `set` patch on
+    // the command key instead of the strip patch. Per design §3.2 P2.
+    if (options.mcpCommandRewrite && finding.id === "settings.mcp_command_missing") {
+      const { oldPath, newPath } = options.mcpCommandRewrite;
+
+      // T-202a: new path must exist on disk.
+      if (!existsSync(newPath)) {
+        refused.push({
+          class: "HardenPlanRefusal",
+          reason: "mcp-rewrite-target-missing",
+          targetPath: tp,
+          detectorId: finding.id,
+          message: `--mcp-command-rewrite new path "${newPath}" does not exist on disk; harden will not write a path that cannot be verified`,
+          nextStep: nextStepFor("mcp-rewrite-target-missing"),
+          exitCode: 2
+        });
+        await safeAppendRefusal(home, finding.id, "mcp-rewrite-target-missing", tp);
+        continue;
+      }
+
+      // T-202b: new path must be executable (+x bit set).
+      let newStat;
+      try {
+        newStat = statSync(newPath);
+      } catch {
+        newStat = null;
+      }
+      if (!newStat || !(newStat.mode & 0o111)) {
+        refused.push({
+          class: "HardenPlanRefusal",
+          reason: "mcp-rewrite-target-not-executable",
+          targetPath: tp,
+          detectorId: finding.id,
+          message: `--mcp-command-rewrite new path "${newPath}" exists but is not executable; harden will not write a non-executable MCP server command`,
+          nextStep: nextStepFor("mcp-rewrite-target-not-executable"),
+          exitCode: 2
+        });
+        await safeAppendRefusal(home, finding.id, "mcp-rewrite-target-not-executable", tp);
+        continue;
+      }
+
+      // T-202c: old path must match a broken mcpServers entry whose command
+      // equals oldPath. The finding tells us an entry is broken, but we must
+      // confirm that the specific server the user named matches.
+      const parsed = parseSettingsSync(tp);
+      let sourceServerName = null;
+      if (parsed && typeof parsed === "object" && parsed.mcpServers) {
+        for (const [name, server] of Object.entries(parsed.mcpServers)) {
+          if (server && typeof server.command === "string" && server.command === oldPath) {
+            sourceServerName = name;
+            break;
+          }
+        }
+      }
+      if (!sourceServerName) {
+        refused.push({
+          class: "HardenPlanRefusal",
+          reason: "mcp-rewrite-source-not-found",
+          targetPath: tp,
+          detectorId: finding.id,
+          message: `--mcp-command-rewrite source path "${oldPath}" does not match the command field of any mcpServers entry in settings.json`,
+          nextStep: nextStepFor("mcp-rewrite-source-not-found"),
+          exitCode: 2
+        });
+        await safeAppendRefusal(home, finding.id, "mcp-rewrite-source-not-found", tp);
+        continue;
+      }
+
+      // All checks passed — build the `set` patch on the specific server's command key.
+      const rewritePatch = {
+        op: "set",
+        path: ["mcpServers", sourceServerName, "command"],
+        value: newPath
+      };
+      const op = { kind: "settings-rewrite", targetPath: tp, patch: rewritePatch };
+
+      const preApplyResult = await handler.preApply(op);
+      if (preApplyResult instanceof PreApplyRefusal) {
+        refused.push({
+          class: "HardenPlanRefusal",
+          reason: preApplyResult.reason,
+          targetPath: tp,
+          detectorId: finding.id,
+          message: preApplyResult.message,
+          nextStep: nextStepFor(preApplyResult.reason),
+          exitCode: 2
+        });
+        await safeAppendRefusal(home, finding.id, preApplyResult.reason, tp);
+        continue;
+      }
+
+      operations.push({
+        detectorId: finding.id,
+        targetPath: tp,
+        mutationKind: "settings-rewrite",
+        mutationOp: op,
+        snapshotStrategy: "file-replace",
+        estimatedBytes: preApplyResult.plannedBytes || 0,
+        expandedFiles: [tp],
+        expectedExitState: "verified"
+      });
       continue;
     }
 
