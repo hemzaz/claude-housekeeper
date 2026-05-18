@@ -441,26 +441,35 @@ test("pruneLearningFiles with all records in window leaves file unchanged", asyn
 });
 
 // ---------------------------------------------------------------------------
-// 17. markFalsePositive — increments state.json counter
+// 17. markFalsePositive — records structured marker in state.json (T-105)
 // ---------------------------------------------------------------------------
 
-test("markFalsePositive creates state.json and sets falsePositives to 1", async () => {
+test("markFalsePositive creates state.json and sets falsePositives to array with one marker", async () => {
   const home = makeHome();
-  await markFalsePositive(home, "op_20260501000000_aabbccdd");
+  const opId = "op_20260501000000_aabbccdd";
+  await markFalsePositive(home, opId);
 
   const state = JSON.parse(readFileSync(stateFile(home), "utf8"));
-  assert.equal(state.falsePositives, 1);
+  assert.ok(Array.isArray(state.falsePositives), "falsePositives must be an array");
+  assert.equal(state.falsePositives.length, 1);
+  assert.equal(state.falsePositives[0].opId, opId);
+  assert.ok(typeof state.falsePositives[0].markedAt === "string", "markedAt must be a string");
   assert.equal(state.learnSchemaVersion, LEARNING_SCHEMA_VERSION);
 });
 
-test("markFalsePositive increments an existing counter", async () => {
+test("markFalsePositive migrates legacy counter-only shape to array on write", async () => {
   const home = makeHome();
   const dir = learningDir(home);
   mkdirSync(dir, { recursive: true });
+  // Write the old counter-only shape.
   writeFileSync(stateFile(home), JSON.stringify({ learnSchemaVersion: "0.4", falsePositives: 5 }) + "\n");
 
-  await markFalsePositive(home, "op_20260501000000_aabbccdd");
+  const opId = "op_20260501000000_aabbccdd";
+  await markFalsePositive(home, opId);
 
   const state = JSON.parse(readFileSync(stateFile(home), "utf8"));
-  assert.equal(state.falsePositives, 6);
+  // After migration the shape must be an array, old counter is discarded.
+  assert.ok(Array.isArray(state.falsePositives), "falsePositives must be migrated to array");
+  assert.equal(state.falsePositives.length, 1, "array has one entry for the new mark");
+  assert.equal(state.falsePositives[0].opId, opId);
 });

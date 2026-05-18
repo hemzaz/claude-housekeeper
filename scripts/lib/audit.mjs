@@ -148,7 +148,7 @@ export function assembleReport(home, options = {}) {
     push(detectorOutputs, selected, detectHomeClean(context));
   }
 
-  const findings = detectorOutputs.map((raw) => buildFinding(raw, { home, mode, policyMatchesFor }));
+  const findings = detectorOutputs.map((raw) => buildFinding(raw, { home, mode, policyMatchesFor, falsePositiveMarkers: context.falsePositiveMarkers }));
 
   const stanceSummary = countStances(findings);
   const boundaries = collectBoundaries(findings);
@@ -201,7 +201,7 @@ function selectedDetectors(scope) {
 
 // ---------- finding assembly (T-202) ----------
 
-function buildFinding(raw, { home, mode, policyMatchesFor }) {
+function buildFinding(raw, { home, mode, policyMatchesFor, falsePositiveMarkers }) {
   const baseSurface = raw.surface
     || classifySurface(raw.targetPath || "", { ...(raw.surfaceHints || {}), home });
   const surface = applySafeModeLimits(baseSurface, mode, raw.id);
@@ -255,6 +255,14 @@ function buildFinding(raw, { home, mode, policyMatchesFor }) {
   // compose-time refusals can still fire downstream.
   if (raw.hardenable === true) finding.hardenable = true;
   if (raw.cleanable === true) finding.cleanable = true;
+
+  // T-105: decorate with falsePositiveSeenBefore: N when a matching marker exists.
+  // Informational only — no stance or ranking change.
+  if (falsePositiveMarkers && falsePositiveMarkers.size > 0) {
+    const key = `${finding.id}|${finding.targetPath}`;
+    const count = falsePositiveMarkers.get(key);
+    if (count) finding.falsePositiveSeenBefore = count;
+  }
 
   return finding;
 }
@@ -1151,7 +1159,8 @@ function earlyReport(home, mode, detectorOutputs) {
   const findings = detectorOutputs.filter(Boolean).map((raw) => buildFinding(raw, {
     home,
     mode,
-    policyMatchesFor: () => []
+    policyMatchesFor: () => [],
+    falsePositiveMarkers: new Map()
   }));
   const stanceSummary = countStances(findings);
   const boundaries = collectBoundaries(findings);
@@ -1255,6 +1264,30 @@ function detectHomeClean(context) {
 
 // ---------- detector primitives ----------
 
+// Load false-positive markers from state.json once per assembleReport call.
+// Returns a Map keyed by "<targetDetector>|<targetPath>" → count.
+// Returns an empty Map if state.json is absent, malformed, or has no markers.
+function loadFalsePositiveMarkers(home) {
+  const stateFile = path.join(home, "housekeeper", "learning", "state.json");
+  if (!existsSync(stateFile)) return new Map();
+  let parsed;
+  try {
+    parsed = JSON.parse(readFileSync(stateFile, "utf8"));
+  } catch {
+    return new Map();
+  }
+  if (!Array.isArray(parsed.falsePositives) || parsed.falsePositives.length === 0) {
+    return new Map();
+  }
+  const map = new Map();
+  for (const marker of parsed.falsePositives) {
+    if (typeof marker.targetDetector !== "string" || typeof marker.targetPath !== "string") continue;
+    const key = `${marker.targetDetector}|${marker.targetPath}`;
+    map.set(key, (map.get(key) || 0) + 1);
+  }
+  return map;
+}
+
 function loadContext(home, options) {
   const pluginsFile = path.join(home, "plugins", "installed_plugins.json");
   const settingsFile = path.join(home, "settings.json");
@@ -1269,6 +1302,7 @@ function loadContext(home, options) {
     maxBytes: DEFAULT_MAX_BYTES,
     maxWallMs: DEFAULT_MAX_WALL_MS
   };
+  const falsePositiveMarkers = loadFalsePositiveMarkers(home);
 
   // T-402: bounded walk of <home>/projects/. Records degraded entries when
   // any budget is hit. Detector reads `projectsScan` to emit the orientation
@@ -1306,6 +1340,7 @@ function loadContext(home, options) {
     projectsScan,
     operationsDir,
     degraded,
+    falsePositiveMarkers,
     now: Date.now()
   };
 }

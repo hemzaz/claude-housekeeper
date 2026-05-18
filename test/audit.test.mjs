@@ -666,6 +666,157 @@ test("settings.invalid_json fires for non-JSONC parse failure (no comments)", ()
   assert.equal(ids.includes("settings.jsonc_detected"), false);
 });
 
+// ---------- T-105: falsePositiveSeenBefore decoration ----------
+
+test("falsePositiveSeenBefore: matching marker decorates only the matching finding", () => {
+  const home = fixtureHome();
+  // Set up a home with a dangling hook path so settings.hook_path_dangling fires.
+  const ghostPath = path.join(home, "plugins/cache/m/never/9.9.9/hook.sh");
+  writeJson(path.join(home, "settings.json"), {
+    hooks: { PreToolUse: [{ hooks: [{ type: "command", command: ghostPath }] }] }
+  });
+
+  // Write a state.json with a false-positive marker for settings.hook_path_dangling
+  // pointing at the settings file (which is the targetPath of that detector).
+  // Note: home IS the .claude directory in audit context, so housekeeper/ is directly under it.
+  const learningDir = path.join(home, "housekeeper", "learning");
+  mkdirSync(learningDir, { recursive: true });
+  const settingsFile = path.join(home, "settings.json");
+  writeJson(path.join(learningDir, "state.json"), {
+    learnSchemaVersion: "0.4",
+    falsePositives: [
+      {
+        opId: "op_20260518000000_aabbccdd",
+        markedAt: new Date().toISOString(),
+        targetDetector: "settings.hook_path_dangling",
+        targetPath: settingsFile
+      }
+    ]
+  });
+
+  const report = assembleReport(home);
+
+  const danglingFinding = report.findings.find((f) => f.id === "settings.hook_path_dangling");
+  assert.ok(danglingFinding, "settings.hook_path_dangling finding must exist");
+  assert.equal(danglingFinding.falsePositiveSeenBefore, 1, "matching finding gets falsePositiveSeenBefore: 1");
+
+  // Other findings must NOT be decorated.
+  for (const f of report.findings) {
+    if (f.id === "settings.hook_path_dangling") continue;
+    assert.equal(
+      f.falsePositiveSeenBefore,
+      undefined,
+      `non-matching finding ${f.id} must not have falsePositiveSeenBefore`
+    );
+  }
+});
+
+test("falsePositiveSeenBefore: multiple markers for the same detector+path accumulate", () => {
+  const home = fixtureHome();
+  const ghostPath = path.join(home, "plugins/cache/m/never/9.9.9/hook.sh");
+  writeJson(path.join(home, "settings.json"), {
+    hooks: { PreToolUse: [{ hooks: [{ type: "command", command: ghostPath }] }] }
+  });
+
+  const learningDir = path.join(home, "housekeeper", "learning");
+  mkdirSync(learningDir, { recursive: true });
+  const settingsFile = path.join(home, "settings.json");
+  writeJson(path.join(learningDir, "state.json"), {
+    learnSchemaVersion: "0.4",
+    falsePositives: [
+      {
+        opId: "op_20260518000000_aabb0001",
+        markedAt: new Date().toISOString(),
+        targetDetector: "settings.hook_path_dangling",
+        targetPath: settingsFile
+      },
+      {
+        opId: "op_20260518000000_aabb0002",
+        markedAt: new Date().toISOString(),
+        targetDetector: "settings.hook_path_dangling",
+        targetPath: settingsFile
+      }
+    ]
+  });
+
+  const report = assembleReport(home);
+  const f = report.findings.find((f) => f.id === "settings.hook_path_dangling");
+  assert.ok(f, "finding must exist");
+  assert.equal(f.falsePositiveSeenBefore, 2, "count reflects both markers");
+});
+
+test("falsePositiveSeenBefore: absent when state.json does not exist", () => {
+  const home = fixtureHome();
+  const ghostPath = path.join(home, "plugins/cache/m/never/9.9.9/hook.sh");
+  writeJson(path.join(home, "settings.json"), {
+    hooks: { PreToolUse: [{ hooks: [{ type: "command", command: ghostPath }] }] }
+  });
+
+  // No state.json written — learning dir does not even exist.
+  const report = assembleReport(home);
+
+  for (const f of report.findings) {
+    assert.equal(
+      f.falsePositiveSeenBefore,
+      undefined,
+      `finding ${f.id} must not have falsePositiveSeenBefore when state.json is absent`
+    );
+  }
+});
+
+test("falsePositiveSeenBefore: absent when state.json has no matching marker", () => {
+  const home = fixtureHome();
+  const ghostPath = path.join(home, "plugins/cache/m/never/9.9.9/hook.sh");
+  writeJson(path.join(home, "settings.json"), {
+    hooks: { PreToolUse: [{ hooks: [{ type: "command", command: ghostPath }] }] }
+  });
+
+  const learningDir = path.join(home, "housekeeper", "learning");
+  mkdirSync(learningDir, { recursive: true });
+  // Marker is for a DIFFERENT detector — must not decorate.
+  writeJson(path.join(learningDir, "state.json"), {
+    learnSchemaVersion: "0.4",
+    falsePositives: [
+      {
+        opId: "op_20260518000000_aabbccdd",
+        markedAt: new Date().toISOString(),
+        targetDetector: "plugin.cache_unreferenced",
+        targetPath: path.join(home, "plugins/cache/m/other/1.0.0")
+      }
+    ]
+  });
+
+  const report = assembleReport(home);
+  for (const f of report.findings) {
+    assert.equal(
+      f.falsePositiveSeenBefore,
+      undefined,
+      `finding ${f.id} must not be decorated when marker is for a different detector`
+    );
+  }
+});
+
+test("falsePositiveSeenBefore: absent when state.json is malformed", () => {
+  const home = fixtureHome();
+  const ghostPath = path.join(home, "plugins/cache/m/never/9.9.9/hook.sh");
+  writeJson(path.join(home, "settings.json"), {
+    hooks: { PreToolUse: [{ hooks: [{ type: "command", command: ghostPath }] }] }
+  });
+
+  const learningDir = path.join(home, "housekeeper", "learning");
+  mkdirSync(learningDir, { recursive: true });
+  writeFileSync(path.join(learningDir, "state.json"), "{ not valid json {{{");
+
+  const report = assembleReport(home);
+  for (const f of report.findings) {
+    assert.equal(
+      f.falsePositiveSeenBefore,
+      undefined,
+      `finding ${f.id} must not be decorated when state.json is malformed`
+    );
+  }
+});
+
 // ---------- helpers ----------
 
 function fixtureHome() {

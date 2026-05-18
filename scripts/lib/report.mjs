@@ -42,6 +42,9 @@ export function renderHumanReport(report, options = {}) {
     lines.push(`  stance: ${primary.stance}`);
     lines.push(`  finding: ${primary.summary || primary.id}`);
     lines.push(`  evidence: ${formatEvidenceShort(primary.evidence)}`);
+    if (typeof primary.falsePositiveSeenBefore === "number") {
+      lines.push(`  false-positive signal: marked false-positive ${primary.falsePositiveSeenBefore}× before`);
+    }
     lines.push(`  missing key: ${formatMissingKey(primary)}`);
     lines.push(`  next step: ${primary.nextAllowedStep || STANCE_NEXT_STEP[primary.stance] || "none"}`);
   }
@@ -298,6 +301,10 @@ function stripFindingForJson(finding) {
     blockedActions: finding.blockedActions || []
   };
   if (finding.proposedProbe) out.proposedProbe = finding.proposedProbe;
+  // T-105: include falsePositiveSeenBefore when present (optional field).
+  if (typeof finding.falsePositiveSeenBefore === "number") {
+    out.falsePositiveSeenBefore = finding.falsePositiveSeenBefore;
+  }
   return out;
 }
 
