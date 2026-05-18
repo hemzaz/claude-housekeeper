@@ -17,7 +17,7 @@ resolves cross-memo conflicts. Protocol mirrors v0.3 T-D01..T-D04.
 Three parallel agents author memos; a fourth synthesizes. T-D05 is
 independent (dev workflow only).
 
-- [ ] **T-D01 (architect)** `docs/design/v0.4-architect-memo.md`
+- [x] **T-D01 (architect)** `docs/design/v0.4-architect-memo.md`
   - Scope: architecture for learning loop schema, MCP rewrite plan
     composition, prune detector + audit-only protocol, P4 target-id
     expansion, JSONC parser comparison, stream chunking model
@@ -25,13 +25,13 @@ independent (dev workflow only).
   - Verify: file exists, ≥ 600 lines, references `snapshot.mjs`,
     `harden-plan.mjs`, `clean-plan.mjs`, `audit.mjs`
 
-- [ ] **T-D02 (product)** `docs/design/v0.4-product-memo.md`
+- [x] **T-D02 (product)** `docs/design/v0.4-product-memo.md`
   - Scope: CLI surface for `learn`, `--mcp-command-rewrite=`, `prune`,
     `--stream`; refusal phrasing + `nextStep` copy; learning-summary
     output format; CHANGELOG shape for v0.4
   - Verify: file exists, ≥ 400 lines, ≥ 2 end-to-end transcripts
 
-- [ ] **T-D03 (platform)** `docs/design/v0.4-platform-memo.md`
+- [x] **T-D03 (platform)** `docs/design/v0.4-platform-memo.md`
   - Scope: Claude Code interop — registry / hooks / skills re-read
     under atomic rename; plugin uninstall race vs running processes;
     MCP server hot-reload after rewrite
