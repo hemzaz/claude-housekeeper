@@ -4,10 +4,10 @@
 // and execute the restore while preserving the Housekeeper lock invariant.
 
 import { existsSync } from "node:fs";
-import { copyFile, mkdir, open, readFile, rm, unlink } from "node:fs/promises";
+import { copyFile, mkdir, readFile, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import os from "node:os";
-import { atomicWrite, generateOpId, hashFile } from "./snapshot.mjs";
+import { atomicWrite, hashFile } from "./snapshot.mjs";
+import { acquireLock, releaseLock, LockHeldError } from "./lock.mjs";
 
 const ROLLBACKABLE_STATUSES = new Set(["applied", "verified", "snapshot_taken"]);
 
@@ -34,14 +34,8 @@ export class SnapshotIntegrityError extends Error {
   }
 }
 
-export class LockHeldError extends Error {
-  constructor(lockManifest) {
-    super(`Housekeeper lock is held by pid ${lockManifest.pid} on ${lockManifest.hostname}`);
-    this.name = "LockHeldError";
-    this.code = "lock-held";
-    this.lockManifest = lockManifest;
-  }
-}
+// LockHeldError is imported from lock.mjs and re-exported so v0.3 callers see no API change.
+export { LockHeldError };
 
 export class RollbackNotImplementedError extends Error {
   constructor(kind) {
@@ -135,63 +129,6 @@ function makeOperation(entry) {
 
 async function readOperationManifest(sourceManifestPath) {
   return JSON.parse(await readFile(sourceManifestPath, "utf8"));
-}
-
-const LOCK_STALE_WINDOW_MS = 30 * 60 * 1000;
-
-async function acquireLock(home) {
-  const lockDir = join(home, "housekeeper");
-  const lockPath = join(lockDir, "lock");
-  await mkdir(lockDir, { recursive: true });
-
-  const manifest = {
-    pid: process.pid,
-    hostname: os.hostname(),
-    opId: generateOpId(),
-    startedAt: new Date().toISOString(),
-    stalenessAt: new Date(Date.now() + LOCK_STALE_WINDOW_MS).toISOString()
-  };
-
-  let fh;
-  try {
-    fh = await open(lockPath, "wx");
-    await fh.writeFile(JSON.stringify(manifest, null, 2) + os.EOL);
-    await fh.close();
-    return lockPath;
-  } catch (err) {
-    if (fh) {
-      try { await fh.close(); } catch { /* ignore */ }
-    }
-    if (err.code === "EEXIST") {
-      try {
-        const raw = await readFile(lockPath, "utf8");
-        const existing = JSON.parse(raw);
-        throw new LockHeldError(existing);
-      } catch (inner) {
-        if (inner instanceof LockHeldError) throw inner;
-        try { await unlink(lockPath); } catch { /* ignore */ }
-        let retry;
-        try {
-          retry = await open(lockPath, "wx");
-          await retry.writeFile(JSON.stringify(manifest, null, 2) + os.EOL);
-          await retry.close();
-          return lockPath;
-        } catch {
-          if (retry) { try { await retry.close(); } catch { /* ignore */ } }
-          throw err;
-        }
-      }
-    }
-    throw err;
-  }
-}
-
-async function releaseLock(lockPath) {
-  try {
-    await unlink(lockPath);
-  } catch {
-    // Already gone.
-  }
 }
 
 const ROLLBACK_REGISTRY = Object.freeze({
@@ -331,20 +268,7 @@ export async function validateRollbackPlan(plan, home) {
  * operation manifest rolled_back. Caller is expected to pass a validated plan.
  */
 export async function executeRollbackPlan(plan, home) {
-  const lockPath = join(home, "housekeeper", "lock");
-  if (existsSync(lockPath)) {
-    try {
-      const raw = await readFile(lockPath, "utf8");
-      const existing = JSON.parse(raw);
-      if (Date.now() < new Date(existing.stalenessAt).getTime()) {
-        throw new LockHeldError(existing);
-      }
-    } catch (err) {
-      if (err instanceof LockHeldError) throw err;
-    }
-  }
-
-  const acquiredPath = await acquireLock(home);
+  const lockHandle = await acquireLock(home);
 
   try {
     const sourceManifestPath = join(home, "housekeeper", "operations", `${plan.opId}.json`);
@@ -369,11 +293,11 @@ export async function executeRollbackPlan(plan, home) {
 
     manifest.status = "rolled_back";
     manifest.rolledBackAt = new Date().toISOString();
-    await atomicWrite(sourceManifestPath, JSON.stringify(manifest, null, 2) + os.EOL);
+    await atomicWrite(sourceManifestPath, JSON.stringify(manifest, null, 2) + "\n");
 
     return manifest;
   } finally {
-    await releaseLock(acquiredPath);
+    await releaseLock(lockHandle, "rolled_back");
   }
 }
 
@@ -388,20 +312,7 @@ export async function executeRollbackPlan(plan, home) {
  * `rollback <id> --abort`.
  */
 export async function abortRollbackOperation(opId, home) {
-  const lockPath = join(home, "housekeeper", "lock");
-  if (existsSync(lockPath)) {
-    try {
-      const raw = await readFile(lockPath, "utf8");
-      const existing = JSON.parse(raw);
-      if (Date.now() < new Date(existing.stalenessAt).getTime()) {
-        throw new LockHeldError(existing);
-      }
-    } catch (err) {
-      if (err instanceof LockHeldError) throw err;
-    }
-  }
-
-  const acquiredPath = await acquireLock(home);
+  const lockHandle = await acquireLock(home);
 
   try {
     const sourceManifestPath = join(home, "housekeeper", "operations", `${opId}.json`);
@@ -413,9 +324,9 @@ export async function abortRollbackOperation(opId, home) {
     await rm(join(home, "housekeeper", "snapshots", opId), { recursive: true, force: true });
     manifest.status = "aborted";
     manifest.abortedAt = new Date().toISOString();
-    await atomicWrite(sourceManifestPath, JSON.stringify(manifest, null, 2) + os.EOL);
+    await atomicWrite(sourceManifestPath, JSON.stringify(manifest, null, 2) + "\n");
     return manifest;
   } finally {
-    await releaseLock(acquiredPath);
+    await releaseLock(lockHandle, "process-exit");
   }
 }

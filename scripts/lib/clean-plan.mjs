@@ -10,21 +10,20 @@
 // Per docs/design/clean-design.md §7 step 3 (T-704).
 
 import { createHash } from "node:crypto";
-import { rm, open, unlink, mkdir, lstat, readFile, readdir, stat } from "node:fs/promises";
+import { rm, lstat, readFile, readdir, stat } from "node:fs/promises";
 import { existsSync, unlinkSync } from "node:fs";
 import { join, basename, dirname } from "node:path";
-import os from "node:os";
 import { assembleReport } from "./audit.mjs";
 import {
   takeSnapshot,
   applyOperation,
   verify,
   gcSnapshots,
-  generateOpId,
   MAX_OPERATION_FILES,
   MAX_OPERATION_BYTES
 } from "./snapshot.mjs";
 import { loadConfig, pathMatchesProtection } from "./policy.mjs";
+import { acquireLock, releaseLock, LockHeldError, LOCK_STALE_WINDOW_MS } from "./lock.mjs";
 
 // suppress unused-import warning for budget constants used in JSDoc
 void MAX_OPERATION_FILES;
@@ -75,18 +74,8 @@ export class PlanDriftError extends Error {
   }
 }
 
-/**
- * LockHeldError — thrown by executeCleanPlan when a live lockfile is present
- * and its stalenessAt timestamp is in the future.
- */
-export class LockHeldError extends Error {
-  constructor(lockManifest) {
-    super(`Housekeeper lock is held by pid ${lockManifest.pid} on ${lockManifest.hostname}`);
-    this.name = "LockHeldError";
-    this.code = "lock-held";
-    this.lockManifest = lockManifest;
-  }
-}
+// LockHeldError is imported from lock.mjs and re-exported so v0.3 callers see no API change.
+export { LockHeldError };
 
 /**
  * NotImplementedError — thrown by MUTATION_REGISTRY for unimplemented kinds.
@@ -201,11 +190,8 @@ const FILE_UNLINK_DETECTORS_V02 = new Set([
   "registry.local_command_identical"
 ]);
 
-// Lockfile staleness window — must match LOCK_STALE_WINDOW_MS below and
-// audit.mjs detectHousekeeperStaleLock. Used by the stale-lock-not-yet-eligible
-// refusal so defense-in-depth holds even if a future detector changes its
-// staleness threshold.
-const STALE_LOCK_WINDOW_MS = 30 * 60 * 1000;
+// LOCK_STALE_WINDOW_MS is imported from lock.mjs — used by the
+// stale-lock-not-yet-eligible refusal for defense-in-depth.
 
 // ── Sector-boundary path test ─────────────────────────────────────────────────
 
@@ -655,7 +641,7 @@ export async function composeCleanPlan(home, options = {}) {
         } else if (typeof manifest.startedAt === "string") {
           // Legacy manifest without stalenessAt — derive from startedAt + 30m.
           const startedAt = new Date(manifest.startedAt).getTime();
-          if (Number.isFinite(startedAt) && now < startedAt + STALE_LOCK_WINDOW_MS) {
+          if (Number.isFinite(startedAt) && now < startedAt + LOCK_STALE_WINDOW_MS) {
             freshLockPaths.add(f.targetPath);
           }
         }
@@ -820,73 +806,6 @@ export async function validateCleanPlan(plan, home) {
   return { ...plan, validatedAt: new Date().toISOString() };
 }
 
-// ── Lockfile helpers ──────────────────────────────────────────────────────────
-
-const LOCK_STALE_WINDOW_MS = 30 * 60 * 1000; // 30 minutes
-
-async function acquireLock(home) {
-  // home is the .claude dir; lockfile lives at home/housekeeper/lock.
-  const lockDir = join(home, "housekeeper");
-  const lockPath = join(lockDir, "lock");
-
-  await mkdir(lockDir, { recursive: true });
-
-  const opId = generateOpId();
-  const now = new Date();
-  const manifest = {
-    pid: process.pid,
-    hostname: os.hostname(),
-    opId,
-    startedAt: now.toISOString(),
-    stalenessAt: new Date(now.getTime() + LOCK_STALE_WINDOW_MS).toISOString()
-  };
-
-  let fh;
-  try {
-    // O_EXCL (wx flag): fails with EEXIST if the file already exists.
-    fh = await open(lockPath, "wx");
-    await fh.writeFile(JSON.stringify(manifest, null, 2) + os.EOL);
-    await fh.close();
-    return lockPath;
-  } catch (err) {
-    if (fh) {
-      try { await fh.close(); } catch { /* ignore */ }
-    }
-    if (err.code === "EEXIST") {
-      // File appeared between our existence check and the open; read it.
-      try {
-        const raw = await readFile(lockPath, "utf8");
-        const existing = JSON.parse(raw);
-        throw new LockHeldError(existing);
-      } catch (inner) {
-        if (inner instanceof LockHeldError) throw inner;
-        // Unreadable lock — treat as stale and retry.
-        try { await unlink(lockPath); } catch { /* ignore */ }
-        // Re-open with wx after clearing stale lock.
-        let fh2;
-        try {
-          fh2 = await open(lockPath, "wx");
-          await fh2.writeFile(JSON.stringify(manifest, null, 2) + os.EOL);
-          await fh2.close();
-          return lockPath;
-        } catch {
-          if (fh2) { try { await fh2.close(); } catch { /* ignore */ } }
-          throw err;
-        }
-      }
-    }
-    throw err;
-  }
-}
-
-async function releaseLock(lockPath) {
-  try {
-    await unlink(lockPath);
-  } catch {
-    // Already gone — ignore.
-  }
-}
-
 // ── executeCleanPlan ──────────────────────────────────────────────────────────
 
 /**
@@ -900,25 +819,8 @@ export async function executeCleanPlan(plan, home) {
   // parent directory, so derive snapshotHome = dirname(home) for those calls.
   // The lockfile lives at home/housekeeper/lock (= ~/.claude/housekeeper/lock).
   const snapshotHome = dirname(home);
-  const lockPath = join(home, "housekeeper", "lock");
 
-  // Pre-flight: check for a live (non-stale) lock before attempting O_EXCL.
-  if (existsSync(lockPath)) {
-    try {
-      const raw = await readFile(lockPath, "utf8");
-      const existing = JSON.parse(raw);
-      const stalenessAt = new Date(existing.stalenessAt).getTime();
-      if (Date.now() < stalenessAt) {
-        throw new LockHeldError(existing);
-      }
-      // Stale lock — acquireLock will overwrite it.
-    } catch (err) {
-      if (err instanceof LockHeldError) throw err;
-      // Unreadable lock — treat as stale.
-    }
-  }
-
-  const acquiredPath = await acquireLock(home);
+  const lockHandle = await acquireLock(home);
 
   try {
     await gcSnapshots(snapshotHome);
@@ -987,7 +889,7 @@ export async function executeCleanPlan(plan, home) {
 
     return finalManifest;
   } finally {
-    await releaseLock(acquiredPath);
+    await releaseLock(lockHandle, "verified");
   }
 }
 
@@ -1141,21 +1043,8 @@ export async function composeBatchCleanPlan(home, options = {}) {
  */
 export async function executeBatchCleanPlan(plan, home) {
   const snapshotHome = dirname(home);
-  const lockPath = join(home, "housekeeper", "lock");
 
-  // Pre-flight lock probe (mirrors executeCleanPlan).
-  if (existsSync(lockPath)) {
-    try {
-      const raw = await readFile(lockPath, "utf8");
-      const existing = JSON.parse(raw);
-      const stalenessAt = new Date(existing.stalenessAt).getTime();
-      if (Date.now() < stalenessAt) throw new LockHeldError(existing);
-    } catch (err) {
-      if (err instanceof LockHeldError) throw err;
-    }
-  }
-
-  const acquiredPath = await acquireLock(home);
+  const lockHandle = await acquireLock(home);
 
   try {
     await gcSnapshots(snapshotHome);
@@ -1233,6 +1122,6 @@ export async function executeBatchCleanPlan(plan, home) {
     const verified = await verify(opId, snapshotHome);
     return verified;
   } finally {
-    await releaseLock(acquiredPath);
+    await releaseLock(lockHandle, "verified");
   }
 }
