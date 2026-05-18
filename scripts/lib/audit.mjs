@@ -47,7 +47,9 @@ const SCOPE_TO_DETECTORS = {
     "settings.jsonc_detected",
     "settings.hook_path_dangling",
     "settings.hook_command_shell_ambiguous",
-    "settings.mcp_command_missing"
+    "settings.mcp_command_missing",
+    // T-402: hooks.config entries with missing command or cwd references
+    "hooks.config_dangling"
   ],
   plugins: [
     "plugin.expected_orphan",
@@ -62,7 +64,11 @@ const SCOPE_TO_DETECTORS = {
     "registry.local_skill_shadow",
     "registry.local_command_identical",
     "registry.local_command_diverged",
-    "registry.broken_frontmatter"
+    "registry.broken_frontmatter",
+    // T-401: dangling local command file (no backing plugin installed)
+    "registry.command_dangling",
+    // T-403: dangling local skill entry (skill file missing on disk)
+    "registry.skills_entry_dangling"
   ],
   housekeeper: [
     "housekeeper.interrupted_operation",
@@ -131,6 +137,8 @@ export function assembleReport(home, options = {}) {
   pushAll(detectorOutputs, selected, detectHookPathDangling(context));
   pushAll(detectorOutputs, selected, detectHookCommandShellAmbiguous(context));
   pushAll(detectorOutputs, selected, detectMcpCommandMissing(context));
+  // T-402: hooks config entries with missing cwd or command references
+  pushAll(detectorOutputs, selected, detectHooksConfigDangling(context));
 
   pushAll(detectorOutputs, selected, detectPluginExpectedOrphan(context));
   pushAll(detectorOutputs, selected, detectPluginCacheUnreferenced(context));
@@ -143,6 +151,10 @@ export function assembleReport(home, options = {}) {
   pushAll(detectorOutputs, selected, detectLocalCommandIdentical(context));
   pushAll(detectorOutputs, selected, detectLocalCommandDiverged(context));
   pushAll(detectorOutputs, selected, detectRegistryBrokenFrontmatter(context));
+  // T-401: dangling local command files (no backing plugin installed)
+  pushAll(detectorOutputs, selected, detectRegistryCommandDangling(context));
+  // T-403: dangling local skill entries (skill SKILL.md missing on disk)
+  pushAll(detectorOutputs, selected, detectSkillsEntryDangling(context));
 
   push(detectorOutputs, selected, detectInterruptedOperation(context));
 
@@ -902,6 +914,138 @@ function detectRegistryBrokenFrontmatter(context) {
       summary: `${file.name} has missing or incomplete YAML frontmatter`,
       nextAllowedStep: "generate a patch preview",
       blockedActions: ["overwrite without backup"]
+    });
+  }
+  return out;
+}
+
+// T-401: registry.command_dangling — local command files whose name does NOT
+// correspond to any installed plugin. Unlike registry.local_command_identical
+// (where a plugin provides the same name), these files have no plugin backing
+// at all and are candidates for file-unlink cleanup.
+//
+// Dangling = exists in <home>/commands/ AND no installed plugin provides a
+// command with the same base name. The file itself must exist (not broken YAML
+// etc. — that is registry.broken_frontmatter). Cleanable via file-unlink.
+function detectRegistryCommandDangling(context) {
+  const localDir = path.join(context.home, "commands");
+  const out = [];
+  for (const command of collectCommands(localDir)) {
+    // If any installed plugin provides a command with this base name the file
+    // is covered by local_command_identical / local_command_diverged — skip.
+    const pluginCommands = context.pluginResources.commands.get(command.name) || [];
+    if (pluginCommands.length > 0) continue;
+    // Dangling: no plugin backing. Emit a cleanable finding.
+    out.push({
+      id: "registry.command_dangling",
+      class: "hygiene",
+      targetPath: command.path,
+      surfaceHints: {},
+      evidence: {
+        structural: [
+          "local command file has no corresponding installed plugin",
+          `file: ${command.path}`
+        ]
+      },
+      missingKeys: ["user-intent for the dangling command file"],
+      summary: `command "${command.name}" has no backing plugin and may be orphaned`,
+      nextAllowedStep: "review whether the file was left by an uninstalled plugin, then run clean",
+      blockedActions: ["delete without user confirmation"],
+      // T-401: cleanable via file-unlink in the clean lane.
+      cleanable: true
+    });
+  }
+  return out;
+}
+
+// T-402: hooks.config_dangling — hook entries in settings.json whose `cwd`
+// field references a directory that does not exist, or whose `command` field
+// is a bare (non-absolute) string whose working dir is missing. This is
+// distinct from settings.hook_path_dangling (which targets absolute plugin-
+// cache paths) — hooks.config_dangling targets the `cwd` field specifically.
+//
+// Hardenable via json-rewrite: the patch builder prunes the dangling entries
+// from the hooks tree (same strategy as buildHookPathDanglingPatch in
+// harden-plan.mjs).
+function detectHooksConfigDangling(context) {
+  if (!context.settings.ok || !context.settings.value) return [];
+  const hooksTree = context.settings.value.hooks;
+  if (!hooksTree || typeof hooksTree !== "object") return [];
+  const out = [];
+  const seen = new Set();
+  const visit = (node) => {
+    if (Array.isArray(node)) {
+      for (const child of node) visit(child);
+    } else if (node && typeof node === "object") {
+      // A hook entry may have a `cwd` field specifying the working directory.
+      if (typeof node.cwd === "string" && node.cwd.startsWith("/")) {
+        if (!existsSync(node.cwd)) {
+          const key = `${context.settingsFile}|cwd:${node.cwd}`;
+          if (!seen.has(key)) {
+            seen.add(key);
+            out.push({
+              id: "hooks.config_dangling",
+              class: "integrity",
+              targetPath: context.settingsFile,
+              surfaceHints: {},
+              evidence: {
+                structural: [
+                  "settings parsed",
+                  `hook entry has a cwd that does not exist: ${node.cwd}`
+                ]
+              },
+              missingKeys: ["live /hooks view"],
+              summary: `settings hook has a missing cwd reference: ${node.cwd}`,
+              nextAllowedStep: "run harden to patch out the dangling hook entry",
+              blockedActions: ["claim hook is functional", "claim fixed"],
+              // T-402: hardenable via json-rewrite (harden lane).
+              hardenable: true
+            });
+          }
+        }
+      }
+      for (const child of Object.values(node)) visit(child);
+    }
+  };
+  visit(hooksTree);
+  return out;
+}
+
+// T-403: registry.skills_entry_dangling — local skill directories in
+// <home>/skills/ whose SKILL.md file is missing on disk. Unlike
+// registry.local_skill_shadow (which fires when the skill name matches a
+// plugin-provided skill), this fires for skill dirs whose SKILL.md is
+// simply absent — the directory exists but the entry is broken.
+//
+// Cleanable via dir-rmtree (the skill directory contains no SKILL.md so the
+// whole dir is an orphan). Alternatively file-unlink if the dir contains only
+// the SKILL.md (absent); for simplicity we emit the dir path and let clean
+// choose dir-rmtree. The targetPath is the skill directory, not the file.
+function detectSkillsEntryDangling(context) {
+  const skillsDir = path.join(context.home, "skills");
+  if (!existsSync(skillsDir)) return [];
+  const out = [];
+  for (const entry of readdirSafe(skillsDir)) {
+    const skillEntryDir = path.join(skillsDir, entry);
+    if (!isDirectory(skillEntryDir)) continue;
+    const skillMd = path.join(skillEntryDir, "SKILL.md");
+    if (existsSync(skillMd)) continue; // has SKILL.md — not dangling
+    out.push({
+      id: "registry.skills_entry_dangling",
+      class: "hygiene",
+      targetPath: skillEntryDir,
+      surfaceHints: {},
+      evidence: {
+        structural: [
+          `skill directory exists but SKILL.md is missing: ${skillEntryDir}`
+        ]
+      },
+      missingKeys: ["user-intent for the orphan skill directory"],
+      summary: `skill directory "${entry}" has no SKILL.md and is orphaned`,
+      nextAllowedStep: "review whether the directory was left by a partial install, then run clean",
+      blockedActions: ["delete without user confirmation"],
+      // T-403: cleanable via dir-rmtree in the clean lane.
+      cleanable: true
     });
   }
   return out;

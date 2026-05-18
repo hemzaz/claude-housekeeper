@@ -121,7 +121,7 @@ test("parseMcpCommandRewrite: empty new side throws Error", () => {
 
 // ── T-201: happy path — composeHardenPlan with mcpCommandRewrite ─────────────
 
-test("composeHardenPlan with mcpCommandRewrite: produces 1 operation, 0 refusals, settings-rewrite kind", async () => {
+test("composeHardenPlan with mcpCommandRewrite: produces 1 operation, 0 refusals, json-rewrite kind (T-400)", async () => {
   const home = makeSyntheticHome();
   const brokenCmd = ghostCommand(home);
   const { settingsPath } = seedBrokenMcpSettings(home, brokenCmd);
@@ -136,7 +136,7 @@ test("composeHardenPlan with mcpCommandRewrite: produces 1 operation, 0 refusals
   assert.equal(plan.schemaVersion, "0.2");
   assert.equal(plan.refused.length, 0, `unexpected refusals: ${JSON.stringify(plan.refused)}`);
   assert.equal(plan.operations.length, 1);
-  assert.equal(plan.operations[0].mutationKind, "settings-rewrite");
+  assert.equal(plan.operations[0].mutationKind, "json-rewrite"); // T-400: canonical kind
   assert.equal(plan.operations[0].detectorId, "settings.mcp_command_missing");
   assert.equal(plan.operations[0].targetPath, settingsPath);
   // Patch must be a `set` on the command key, not a remove of the whole entry.

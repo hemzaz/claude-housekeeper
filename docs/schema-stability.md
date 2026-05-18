@@ -230,7 +230,16 @@ rules above.
 | --- | --- | --- | --- |
 | `dir-rmtree` | v0.2 | Recursively remove a directory tree after snapshot | Restore the snapshot tree byte-for-byte |
 | `file-unlink` | v0.2 | Unlink a single file after snapshot | Restore the snapshot file byte-for-byte |
-| `settings-rewrite` | v0.3 | Read → parse → apply structural patch → strict JSON serialize → atomic rename (write-temp + rename + fsync-parent) | Restore the snapshot file byte-for-byte |
+| `json-rewrite` | v0.4 (canonical); `settings-rewrite` is a back-compat alias (T-400) | Read → parse → apply structural patch → strict JSON serialize → atomic rename (write-temp + rename + fsync-parent) | Restore the snapshot file byte-for-byte |
+| `settings-rewrite` | v0.3 alias for `json-rewrite` (T-400); both point to the same handler | (same as `json-rewrite`) | (same as `json-rewrite`) |
+
+### `json-rewrite` (canonical as of v0.4, T-400)
+
+`json-rewrite` is the canonical name for the structural JSON rewrite mutation
+kind. `settings-rewrite` is a backward-compatible alias pointing to the same
+handler; v0.3 callers and tests that reference `settings-rewrite` continue to
+work unchanged. New operations emitted by the harden pipeline carry
+`mutationKind: "json-rewrite"` (T-400 canonical kind).
 
 ### `settings-rewrite` (added v0.3)
 
@@ -278,13 +287,16 @@ commit). Recorded here for cross-reference:
 
 ### New finding ids (additive)
 
-Two new detector ids join the stable set in v0.4. Adding a detector id
+Five new detector ids join the stable set in v0.4. Adding a detector id
 is additive per [versioning-policy.md §1.1](./versioning-policy.md#11-detector-ids).
 
-| Id | Added in | Description |
-| --- | --- | --- |
-| `plugin.unused_past_grace` | v0.4 | Plugin cache has not been applied within the grace window; emits at `inform` stance (audit-only in v0.4.0) |
-| `settings.jsonc_detected` | v0.3 | `settings.json` contains JSONC comments; rewrite refused until comments are removed (see §8.3 of threat model) |
+| Id | Lane | Added in | Description |
+| --- | --- | --- | --- |
+| `plugin.unused_past_grace` | (audit-only) | v0.4 (T-300) | Plugin cache has not been applied within the grace window; emits at `inform` stance (audit-only in v0.4.0; mutation in v0.4.1) |
+| `settings.jsonc_detected` | (audit-only) | v0.3 | `settings.json` contains JSONC comments; rewrite refused until comments are removed (see §8.3 of threat model) |
+| `registry.command_dangling` | clean (`file-unlink`) | v0.4 (T-401) | Local command file in `<home>/commands/` with no backing installed plugin |
+| `hooks.config_dangling` | harden (`json-rewrite`) | v0.4 (T-402) | Hook entry in `settings.json` whose `cwd` field references a missing directory |
+| `registry.skills_entry_dangling` | clean (`dir-rmtree`) | v0.4 (T-403) | Directory in `<home>/skills/` missing its `SKILL.md` |
 
 `settings.jsonc_detected` was introduced in v0.3 as the refusal class
 `settings-jsonc-detected`. The detector-id form `settings.jsonc_detected`
@@ -330,14 +342,11 @@ Fields on each `lock.history` line:
 | `holder` | stable | lock holder string (matches the lockfile content) |
 | `releaseReason` | stable, nullable | human-readable release reason; absent on `acquire` lines |
 
-### New mutation kind: `settings-rewrite` (already documented above)
+### Mutation kinds in v0.4
 
 `settings-rewrite` was added in v0.3 and is documented in the
-"Documented mutation kinds" table above. No additional entry needed.
-
-### Reserved mutation kind: `json-rewrite`
-
-The kind identifier `json-rewrite` is reserved for Phase 4 (T-400).
-It is not yet materialised. When Phase 4 ships, this section will
-be updated with the full apply/rollback contract. Adding it is
-additive; no `schemaVersion` bump is required.
+"Documented mutation kinds" table above. v0.4 (Phase 4, T-400)
+generalizes it to a canonical `json-rewrite` kind; `settings-rewrite`
+remains as a back-compat **alias** pointing at the same handler.
+Both identifiers are stable. Adding the canonical name is additive;
+no `schemaVersion` bump is required.
