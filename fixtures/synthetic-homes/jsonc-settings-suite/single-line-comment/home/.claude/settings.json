@@ -1,0 +1,6 @@
+{
+  // T-501 fixture: single-line comment between two keys.
+  "model": "claude-sonnet-4-5",
+  // hooks section follows
+  "hooks": {}
+}

@@ -1,0 +1,5 @@
+{
+  // T-501 fixture: trailing comma after last object member (JSONC extension).
+  "model": "claude-sonnet-4-5",
+  "hooks": {},
+}

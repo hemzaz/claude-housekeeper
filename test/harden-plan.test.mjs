@@ -117,31 +117,24 @@ test("compose refusal: no-mutation-mapping-in-v0.3 for non-hardenable detector",
   assert.ok(plan.refused[0].nextStep.length > 0);
 });
 
-test("compose refusal: settings-jsonc-detected when settings.json contains // comments", async () => {
+test("compose: settings-jsonc-detected finding now produces operation (v0.4 Q4 — jsonc-parser round-trip)", async () => {
+  // v0.4 Q4 ruling: JSONC files with // or /* comments are no longer refused.
+  // jsonc-parser preserves comments byte-for-byte via modify() + applyEdits().
+  // Previously (v0.3): preApply refused with "settings-jsonc-detected".
+  // Now (v0.4): preApply succeeds → plan has 1 operation, 0 refusals.
+  // T-502: "previously-refusing JSONC fixtures should now HARDEN successfully".
   const home = makeSyntheticHome();
   const settingsPath = path.join(home, "settings.json");
-  // Valid-shape JSONC: a `//` line comment. Strict JSON.parse fails; the
-  // tokenizer in audit.mjs hasJsonComments returns true → JSONC refusal.
-  // Must ALSO trigger the detector — but settings_invalid_json fires only when
-  // strict parse fails AND raw has no comments. We need a non-JSONC dangling-
-  // hook source to seed the detector finding. Workaround: seed the detector
-  // first, then overwrite the file with JSONC content. The detector hash in
-  // composeHardenPlan re-runs assembleReport, so the dangling-hook finding
-  // does NOT fire on the JSONC version (JSON.parse fails). Use a different
-  // approach: seed JSONC content that StRICT JSON cannot parse and which
-  // therefore fires settings.jsonc_detected, then point our hardenable
-  // override at that detector.
   writeFileSync(settingsPath, `// hello\n{\n  "hooks": {}\n}\n`);
   const plan = await composeHardenPlan(home, {
     target: "settings.jsonc_detected",
     path: settingsPath,
     __overrideHardenable: ["settings.jsonc_detected"]
   });
-  // The detector emits a finding; preApply runs and refuses with JSONC class.
-  assert.equal(plan.operations.length, 0);
-  assert.equal(plan.refused.length, 1);
-  assert.equal(plan.refused[0].reason, "settings-jsonc-detected");
-  assert.ok(plan.refused[0].nextStep.includes("Strip comments"));
+  // v0.4: JSONC round-trip succeeds → operation planned, not refused.
+  assert.equal(plan.refused.length, 0, "no refusals for JSONC in v0.4");
+  assert.equal(plan.operations.length, 1, "one operation planned for JSONC target");
+  assert.equal(plan.operations[0].mutationKind, "json-rewrite");
 });
 
 test("compose refusal: settings-shape-unknown when settings.json is malformed without comments", async () => {
