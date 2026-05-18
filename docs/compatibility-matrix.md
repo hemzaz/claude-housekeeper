@@ -55,6 +55,38 @@ new `settings-network-filesystem` refusal class are documented in
 | CI `version-pin` job | `.github/workflows/ci.yml` | supported | asserts `docs/index.html` contains `v$(jq -r .version package.json)`; closes G4 release-readiness gap |
 | Q1–Q5 outcomes | recorded | n/a | Q1 refuse (`settings-shape-unknown`); Q2 refuse v0.3 (`settings-jsonc-detected`); Q3 manifest-atomic no auto-rollback; Q4 per-detector `hardenable` flag; Q5 CI check |
 
+## v0.4.0-beta.1 surface
+
+`v0.4.0-beta.1` carries the v0.3.0 matrix forward unchanged. The rows
+below record the v0.4-specific surfaces. The `jsonc-parser` runtime
+dependency is the one addition to the dependency graph — all other
+modules remain pure Node.js built-ins.
+
+Q1–Q5 rulings from the v0.4 design memo (`docs/design/v0.4-design.md`)
+are recorded in the notes column below.
+
+| Dimension | Tested entry | State | Notes |
+| --- | --- | --- | --- |
+| `housekeeper learn` subcommand | `test/learning.test.mjs` (12+ tests), `test/cli-learn.test.mjs` | supported | Q1: schema version field on every JSONL write; `--json` / `--prune --older-than=` / `--mark-false-positive` all tested |
+| `housekeeper prune` subcommand | `test/plugin-prune.test.mjs` (8+ tests) | supported | audit-only in v0.4.0; uninstall mutation deferred to v0.4.1; `prune-history-unavailable` refusal class tested |
+| `plugin.unused_past_grace` detector | `test/plugin-prune.test.mjs` + fixture `plugin-not-referenced-past-grace/` | supported | grace-window boundary + false-positive interaction + history-unavailable path all covered |
+| `harden --mcp-command-rewrite=<old>=<new>` | `test/mcp-rewrite.test.mjs` (10+ tests) | supported | happy path, all three refusal classes (`mcp-rewrite-target-missing`, `mcp-rewrite-target-not-executable`, `mcp-rewrite-source-not-found`), idempotency, snapshot/rollback round-trip |
+| `clean --batch=N --stream` | `test/clean-batch-stream.test.mjs` (12+ tests) | supported | Q5: chunk boundary, per-chunk failure halt, rollback-of-stream; `stream-chunk-budget-exceeded` and `stream-resume-not-supported` refusal classes; `--stream` rejected without `--batch=N > 50` |
+| `json-rewrite` mutation kind | `test/jsonc-rewrite.test.mjs` (10+ tests) | supported | Q2: comment-preserving round-trip via `jsonc-parser`; identity patch yields byte-equal output on 5 JSONC fixtures; divergence-refusal class fires on parser mismatch |
+| `settings-rewrite` as back-compat alias | all v0.3 `settings-rewrite` tests | supported | v0.3 tests pass byte-for-byte; alias routes through the same `json-rewrite` implementation |
+| `registry.command_dangling` detector + harden | `test/harden-nonsettings.test.mjs` | supported | Q2: patch removes dangling entry, preserves others byte-for-byte; happy / refusal / rollback all covered |
+| `hooks.config_dangling` detector + harden | `test/harden-nonsettings.test.mjs` | supported | same test suite; three surface types × happy / refusal / rollback |
+| `registry.skills_entry_dangling` detector + harden | `test/harden-nonsettings.test.mjs` | supported | same test suite |
+| `lock.history` JSONL | `test/lock.test.mjs` | supported | N6: acquire+release round-trips produce correct line count and order |
+| `falsePositiveSeenBefore` field on `Finding` | `test/learning.test.mjs` | supported | field present on matching finding only; omitted when count is zero |
+| `jsonc-parser` runtime dependency | `package.json` `dependencies`, `npm install` | supported | pinned at `^3.3.1`; MIT, zero transitive deps; ratified per architect §6.5 and platform §4.4 |
+| Pre-commit forbidden-language hook | `.husky/pre-commit` + `test/forbidden-language.test.mjs` | supported | T-D05: commit with forbidden term fails hook with same message CI emits |
+| Q1 ruling | learning schema version field | recorded | every JSONL write carries `schemaVersion` field |
+| Q2 ruling | `json-rewrite` canonical kind; `settings-rewrite` alias | recorded | comment-preserving rewrite via `jsonc-parser`; refusal class `settings-jsonc-rewrite-failed` on divergence |
+| Q3 ruling | manifest-atomic batch semantics (carried from v0.3) | recorded | unchanged from v0.3; stream adds per-chunk manifest-atomic semantics |
+| Q4 ruling | `hardenable` flag on `DetectorOutput` (carried from v0.3) | recorded | three Phase-4 detectors declare `hardenable: true` |
+| Q5 ruling | `--stream` chunk model | recorded | chunks applied sequentially; per-chunk rollback in reverse on failure; no cross-chunk resume |
+
 ## What Housekeeper does NOT depend on
 
 Housekeeper is explicitly designed to run when the Claude Code surface is

@@ -180,7 +180,7 @@
   <body>
     <nav>
       <strong>Claude Housekeeper</strong>
-      <a href="https://github.com/hemzaz/claude-housekeeper/releases/tag/v0.3.0">v0.3.0</a>
+      <a href="https://github.com/hemzaz/claude-housekeeper/releases/tag/v0.4.0-beta.1">v0.4.0-beta.1</a>
       <a href="https://github.com/hemzaz/claude-housekeeper">GitHub</a>
     </nav>
 
@@ -325,14 +325,15 @@ block    not allowed under current evidence</pre>
               <li><strong>v0.2.0-beta.1 (Phase 9):</strong> interrupted-operation recovery via <code>rollback --abort &lt;id&gt;</code>, SessionStart hook surfacing non-terminal manifests, legacy pre-v0.2 manifest detection, and recovery hints on audit findings.</li>
               <li><strong>v0.2.0-beta.1 (Phase 10):</strong> broadened cleanable set with a <code>file-unlink</code> mutation kind. <code>housekeeper.stale_lock</code> and <code>registry.local_command_identical</code> join <code>plugin.cache_unreferenced</code> as cleanable detectors. See the <a href="https://github.com/hemzaz/claude-housekeeper/blob/main/docs/migration-v0.1-to-v0.2.md">v0.1 → v0.2 migration guide</a> and the <a href="https://github.com/hemzaz/claude-housekeeper/blob/main/docs/versioning-policy.md">versioning policy</a>.</li>
               <li><strong>v0.3.0:</strong> <code>harden --confirm --yes</code> for guarded <code>settings.json</code> rewrite through a new <code>settings-rewrite</code> mutation kind. Three settings detectors promoted to <strong>hardenable</strong>: <code>settings.hook_path_dangling</code>, <code>settings.mcp_command_missing</code>, and <code>settings.invalid_json</code> (the last surfaces with a <code>harden</code> next-step but refuses on invocation per Q1). <code>clean --batch=&lt;n&gt;</code> aggregates multiple <code>file-unlink</code> operations under one manifest (manifest-atomic, no auto-rollback per Q3). Two-phase JSONC detection splits <code>settings.jsonc_detected</code> from <code>settings.invalid_json</code>. CI <code>version-pin</code> check guards docs/index.html against stale version drift. See the <a href="https://github.com/hemzaz/claude-housekeeper/blob/main/docs/migration-v0.2-to-v0.3.md">v0.2 → v0.3 migration guide</a>.</li>
+              <li><strong>v0.4.0-beta.1:</strong> On-disk learning loop: <code>learn</code> subcommand (plain-text and <code>--json</code> summary, <code>--prune --older-than=&lt;days&gt;</code>, <code>--mark-false-positive</code>) and <code>prune</code> subcommand (audit-only table of plugins unused past grace window). <code>harden --mcp-command-rewrite=&lt;old&gt;=&lt;new&gt;</code> rewrites MCP server command paths in <code>settings.json</code>. <code>clean --batch=N --stream</code> chunks large batches into per-chunk snapshot+apply+verify cycles. Four new detectors: <code>plugin.unused_past_grace</code>, <code>registry.command_dangling</code>, <code>hooks.config_dangling</code>, <code>registry.skills_entry_dangling</code>. Canonical <code>json-rewrite</code> mutation kind with JSONC comment preservation via <code>jsonc-parser</code>; <code>settings-rewrite</code> kept as back-compat alias. <code>lock.history</code> JSONL for lockfile audit trail. See the <a href="https://github.com/hemzaz/claude-housekeeper/blob/main/docs/migration-v0.3-to-v0.4.md">v0.3 → v0.4 migration guide</a>.</li>
             </ul>
           </div>
           <div>
             <strong>Roadmap</strong>
             <ul>
               <li>Non-interactive subagent dispatch smoketest in <code>verify</code></li>
-              <li>Local learning from accepted plans and false positives</li>
-              <li>JSONC-aware <code>settings.json</code> rewrite (deferred to v0.4 per Q2 ruling)</li>
+              <li>v0.4.1: plugin uninstall mutation wired to <code>plugin.unused_past_grace</code></li>
+              <li>v0.5: suggestion engine; <code>--stream</code> resume across invocations</li>
               <li>Cross-kind batches that include <code>settings-rewrite</code> (deferred per C6 ruling)</li>
             </ul>
           </div>

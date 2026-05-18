@@ -14,6 +14,138 @@ with two caveats documented in the design notes:
 
 _No changes yet._
 
+## [0.4.0-beta.1] — 2026-05-18
+
+The v0.4 line. Introduces a full on-disk learning loop (`learn` and
+`prune` subcommands), MCP command rewrite (`--mcp-command-rewrite=`),
+JSONC-aware `settings.json` rewrite via `jsonc-parser`, batch streaming
+(`clean --batch=N --stream`), four new detectors, and the canonical
+`json-rewrite` mutation kind (with `settings-rewrite` kept as a
+back-compat alias).
+
+All v0.3 contracts hold byte-for-byte. The only new runtime dependency
+is `jsonc-parser` (Microsoft, MIT, zero transitive dependencies).
+
+See [`docs/migration-v0.3-to-v0.4.md`](docs/migration-v0.3-to-v0.4.md)
+for the upgrade guide.
+
+### Added
+
+- **`housekeeper learn` subcommand** (Phase 1, T-100..T-107). Surfaces
+  a summary of what Housekeeper has learned from past sessions — which
+  refusals recur, which findings were marked as false positives, and
+  which applied operations were later rolled back. Four flag variants:
+  - No args: plain-text learning summary (counts + top recurrers).
+  - `--json`: machine-readable summary object.
+  - `--prune --older-than=<days>`: remove learning log entries older
+    than the specified number of days and print how many were pruned.
+  - `--mark-false-positive <op_id>`: mark an operation's refusal as a
+    false positive so the detector id shows a reduced weight in future
+    summaries.
+- **`housekeeper prune` subcommand** (Phase 3, T-300..T-304). Audit-only
+  view filtered to `plugin.unused_past_grace` findings. Prints a table
+  of installed plugins that have not appeared in any applied operation
+  within the grace window. No mutation in v0.4.0; v0.4.1 will wire the
+  uninstall mutation after the audit window validates the heuristic.
+- **`harden --mcp-command-rewrite=<old>=<new>`** (Phase 2, T-200..T-204).
+  Extends `composeHardenPlan` to rewrite an MCP server's `command` path
+  in `settings.json` from `<old>` to `<new>`. Three pre-snapshot refusal
+  classes guard the rewrite: `mcp-rewrite-target-missing` (the target
+  MCP entry is not found), `mcp-rewrite-target-not-executable` (the new
+  path exists but is not executable), and `mcp-rewrite-source-not-found`
+  (the `<old>` path does not match any MCP entry). Each refusal carries
+  a `nextStep`.
+- **`clean --batch=N --stream`** (Phase 6, T-600..T-605). Streams a
+  large batch in configurable chunks. `--stream` is only valid with
+  `--batch=N` where N > 50; rejected with `stream-resume-not-supported`
+  for smaller batches. Per-chunk snapshot + apply + verify pipeline;
+  halts and triggers per-chunk rollback in reverse order on any chunk
+  failure. Refusal classes: `stream-chunk-budget-exceeded` and
+  `stream-resume-not-supported`.
+- **On-disk learning loop** (Phase 1, T-100..T-107). Four append-only
+  JSONL files under `<home>/.claude/housekeeper/learning/`:
+  - `refusals.jsonl` — written by `composeCleanPlan` and
+    `composeHardenPlan` on every refusal.
+  - `applied.jsonl` — written by `executeCleanPlan` and
+    `executeHardenPlan` on every successful application.
+  - `rollbacks.jsonl` — written by `executeRollbackPlan` on every
+    successful restore.
+  - `state.json` — lightweight counters updated after each append;
+    allows `learn` to render a summary without scanning every JSONL line.
+  Schema version field on every write per Q1 ruling.
+- **`lock.history` JSONL** (N6 carry-over, T-099a). Append-only JSONL
+  at `<home>/.claude/housekeeper/lock.history`. One line per acquire /
+  release: `{ts, pid, action, holder, releaseReason?}`. Provides an
+  audit trail for lockfile contention without requiring a separate log
+  rotation scheme.
+- **Four new detectors** (Phase 3–4):
+  - `plugin.unused_past_grace` — installed plugin that has no entry in
+    `applied.jsonl` within the 7-day grace window and no active hook or
+    command reference; surfaces at `inform` stance (T-300).
+  - `registry.command_dangling` — local command file whose counterpart
+    plugin entry no longer exists in `installed_plugins.json`; hardenable
+    via `json-rewrite` (T-401).
+  - `hooks.config_dangling` — hook entry in `settings.json` whose
+    command path exists but the parent plugin is no longer installed;
+    hardenable via `json-rewrite` (T-402).
+  - `registry.skills_entry_dangling` — skills registry entry referencing
+    a plugin that is no longer installed; hardenable via `json-rewrite`
+    (T-403).
+- **`json-rewrite` mutation kind** (Phase 4, T-400). Canonical third
+  mutation kind in `MUTATION_REGISTRY` for structured JSON patching via
+  `jsonc-parser`'s `modify()` + `applyEdits()`. Comment-preserving:
+  `//` and `/* */` blocks in `settings.json` survive the round-trip.
+  `settings-rewrite` is now a back-compat alias that routes through the
+  same implementation. The three Phase-4 hardenable detectors
+  (`registry.command_dangling`, `hooks.config_dangling`,
+  `registry.skills_entry_dangling`) use this kind.
+- **`falsePositiveSeenBefore` optional field on `Finding`** (T-105).
+  When `learn --mark-false-positive <op_id>` has been invoked for an
+  operation, subsequent `diagnose` runs decorate the matching finding
+  with `falsePositiveSeenBefore: N` (the count of prior false-positive
+  marks for this detector id). Field is omitted when the count is zero.
+- **`jsonc-parser` runtime dependency** (Phase 5, T-500). Pinned at
+  `^3.3.1`. Used by `MUTATION_REGISTRY["json-rewrite"].preApply` and
+  `.apply` for comment-preserving JSONC rewrites. Zero transitive
+  dependencies (Microsoft MIT). Ratified exception to the zero-deps
+  invariant per architect memo §6.5 and platform memo §4.4.
+- **Pre-commit forbidden-language hook** (T-D05). `.husky/pre-commit`
+  runs `node test/forbidden-language.test.mjs` on staged files. Fails
+  the commit with file name, line number, and matched phrase — the same
+  surface CI emits.
+
+### Changed
+
+- **`settings-rewrite` is now a back-compat alias for `json-rewrite`.**
+  All v0.3 operation manifests with `kind: settings-rewrite` remain
+  readable and restorable under v0.4 without conversion. The alias
+  routes to the same `preApply / apply / rollback` implementation.
+  Tests written against `settings-rewrite` pass byte-for-byte (T-400).
+- **`settings.jsonc_detected` findings are now hardenable.** In v0.3,
+  `settings.jsonc_detected` was an `inform`-stance non-actionable finding
+  (comments could not be safely preserved). In v0.4, `jsonc-parser`'s
+  `modify()` + `applyEdits()` preserves comments through the rewrite.
+  Harden now acts on JSONC-bearing settings files; the refusal class
+  `settings-jsonc-rewrite-failed` fires only when the parser diverges
+  from the original content on a round-trip identity check (T-502).
+
+### Notes
+
+- **Zero-deps invariant:** retained except for `jsonc-parser`. The
+  ratified exception is documented in architect memo §6.5 and platform
+  memo §4.4. All other modules remain pure Node.js built-ins.
+- **HMAC residual G13:** manifest signing is deliberately out of scope
+  for v0.4. Carried forward; see `docs/threat-model.md`.
+- **MCP rewrite foreign-owner threat mitigation** (user-supplied path
+  injection via `--mcp-command-rewrite=`) is deferred to v0.4.x. The
+  `mcp-rewrite-target-not-executable` refusal class provides partial
+  mitigation in v0.4.0-beta.1.
+
+### Migration
+
+See [`docs/migration-v0.3-to-v0.4.md`](docs/migration-v0.3-to-v0.4.md)
+for the full upgrade guide. No breaking changes from v0.3.0.
+
 ## [0.3.0] — 2026-05-17
 
 The v0.3 line. Introduces `harden --confirm --yes` for guarded
@@ -192,7 +324,7 @@ detection. 365 tests on the Ubuntu + macOS × Node 20 + 22 matrix.
   `snapshot_taken`, `applied` without `verified`) so users learn about
   stuck operations at session boundaries rather than the next clean.
 - **Rollback abort flow** (#60). `rollback --abort <id>` cancels a
-  `snapshot_taken` or `planned` operation and removes its unused
+  `snapshot_taken` or `planned` operation and removes its no-longer-needed
   snapshot tree.
 - **Interrupted-operation recovery hints** (#59). Audit findings for
   `housekeeper.interrupted_operation` now carry a `nextStep` that
@@ -356,7 +488,8 @@ cache drift, and protected local state.
 - Do-not-touch rules are a hard boundary; protected findings are
   visible but non-actionable.
 
-[Unreleased]: https://github.com/hemzaz/claude-housekeeper/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/hemzaz/claude-housekeeper/compare/v0.4.0-beta.1...HEAD
+[0.4.0-beta.1]: https://github.com/hemzaz/claude-housekeeper/compare/v0.3.0...v0.4.0-beta.1
 [0.3.0]: https://github.com/hemzaz/claude-housekeeper/releases/tag/v0.3.0
 [0.2.0]: https://github.com/hemzaz/claude-housekeeper/releases/tag/v0.2.0
 [0.2.0-beta.1]: https://github.com/hemzaz/claude-housekeeper/releases/tag/v0.2.0-beta.1
