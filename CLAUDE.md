@@ -63,3 +63,9 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 ---
 
 **These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
+
+---
+
+## Codebase Map
+
+> **Full codebase map: [docs/CODEBASE_MAP.md](docs/CODEBASE_MAP.md)** — covers v0.3.0 + v0.4-planning HEAD `c0cd43c`. Module-by-module exports, dependency graph (incl. `harden-plan.mjs` and the `snapshot→audit` `hasJsonComments` cross-dep), command-to-pipeline traces for `diagnose / plan / verify / clean / clean --batch / harden / rollback / --abort`, schema + budget + timeout constants (incl. exit-code 124 for `--timeout`), test coverage matrix, fixtures index, and navigation guides for common tasks (adding a detector, cleanable kind, hardenable detector, changing a JSON field, preparing a release).
