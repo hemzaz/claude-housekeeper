@@ -1,0 +1,15 @@
+{
+  "model": "claude-sonnet-4-5",
+  "hooks": {
+    /* pre-tool hooks */
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        // nested inline comment
+        "hooks": [
+          { "type": "command", "command": "/bin/true" }
+        ]
+      }
+    ]
+  }
+}

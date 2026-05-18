@@ -1,0 +1,22 @@
+id: jsonc-settings-suite/mixed-comments
+purpose: |
+  T-501 fixture: settings.json contains both // line comments and /* block */
+  comments. Used by test/jsonc-rewrite.test.mjs to verify that jsonc-parser
+  round-trips JSONC content byte-for-byte on identity patches.
+surfaces:
+  - path: ~/.claude/settings.json
+    surfaceClass: authored-config
+    ownerClass: user-owned
+    loadBearingClass: known-load-bearing
+    sensitivityClass: private-path
+    executionClass: inert
+    rollbackClass: snapshot-possible
+    scopeClass: in-scope
+finding:
+  class: orientation
+  stance: inform
+harden_expectations:
+  hardenable: true
+  reason: |
+    v0.4 Q4 ruling: jsonc-parser supports comment-preserving round-trips.
+    Identity patch yields byte-equal output; no divergence expected.

@@ -3,6 +3,7 @@
 // I/O functions (takeSnapshot) — write-temp + rename + fsync-parent atomic protocol.
 
 import { createHash, randomBytes } from "node:crypto";
+import { modify as jsoncModify, applyEdits as jsoncApplyEdits } from "jsonc-parser";
 import {
   mkdir,
   open,
@@ -572,7 +573,7 @@ export async function applyOperation(id, home, ops) {
     }
   }
 
-  // Suppress unused-variable warning — hadFailure drives partialApply already set above.
+  // hadFailure drives partialApply already set above; void suppresses the lint warning.
   void hadFailure;
 
   manifest.status = "applied";
@@ -758,6 +759,47 @@ function deepEqual(a, b) {
 }
 
 /**
+ * jsoncPatchPath(patch) — translate an applyPatch-style patch into a
+ * jsonc-parser modify() call and return { path, value }.
+ *
+ * Supported ops (matching applyPatch DSL):
+ *   remove → modify(text, path, undefined)
+ *   set    → modify(text, path, value)
+ *
+ * "append" is not supported for JSONC (non-idempotent by design); callers
+ * that pass append on a JSONC file will get patch-produces-invalid-json.
+ *
+ * Returns null if the op is not translatable.
+ */
+function jsoncPatchPath(patch) {
+  if (!patch || typeof patch !== "object") return null;
+  const segs = Array.isArray(patch.path) ? patch.path : [];
+  if (patch.op === "remove") {
+    return { path: segs, value: undefined };
+  }
+  if (patch.op === "set") {
+    return { path: segs, value: patch.value };
+  }
+  return null;
+}
+
+/**
+ * applyJsoncPatch(source, patch) — apply a patch to a JSONC source string
+ * using jsonc-parser modify() + applyEdits(). Preserves comments, trailing
+ * commas, and all content outside the edit window byte-for-byte.
+ *
+ * Returns the patched string, or throws on untranslatable ops.
+ */
+function applyJsoncPatch(source, patch) {
+  const translated = jsoncPatchPath(patch);
+  if (!translated) {
+    throw new TypeError(`applyJsoncPatch: op "${patch.op}" is not supported for JSONC files`);
+  }
+  const edits = jsoncModify(source, translated.path, translated.value, { formattingOptions: {} });
+  return jsoncApplyEdits(source, edits);
+}
+
+/**
  * MUTATION_REGISTRY — json-rewrite (canonical, T-400) and settings-rewrite
  * (alias for v0.3 back-compat) contract for the v0.3/v0.4 harden pipeline.
  * Per docs/design/v0.3-design.md §3.1 and docs/design/v0.4-design.md §2.
@@ -778,16 +820,24 @@ function deepEqual(a, b) {
 // Internal handler object — defined once, referenced by both registry keys.
 const _jsonRewriteHandler = Object.freeze({
     /**
-     * preApply — runs BEFORE takeSnapshot. Five steps per design §3.1:
-     *   1. Strict JSON.parse the file at op.targetPath
-     *   2. On SyntaxError, run JSONC tokenizer; emit `settings-jsonc-detected`
-     *      if comments found, else `settings-shape-unknown`
-     *   3. Apply op.patch in-memory → result
-     *   4. JSON.stringify(result) and JSON.parse the output (round-trip).
-     *      On failure: `patch-produces-invalid-json`
-     *   5. Apply patch again to `result` → result2.
-     *      If !deepEqual(result, result2): `patch-not-idempotent`
-     *   Return { ok: true, plannedBytes: <bytes after step 4> }
+     * preApply — runs BEFORE takeSnapshot. Per docs/design/v0.4-design.md §3.5:
+     *
+     * Plain-JSON path (no JSONC comments detected):
+     *   1. Strict JSON.parse the file at op.targetPath.
+     *   2. On SyntaxError with no JSONC comments: refuse with `settings-shape-unknown`.
+     *   3. Apply op.patch in-memory → result.
+     *   4. JSON.stringify(result) round-trip check → `patch-produces-invalid-json` on failure.
+     *   5. Apply patch again → result2; if !deepEqual(result, result2): `patch-not-idempotent`.
+     *   Return { ok: true, plannedBytes }.
+     *
+     * JSONC path (v0.4 Q4 ruling — jsonc-parser):
+     *   1. Strict JSON.parse fails; hasJsoncComments confirms JSONC.
+     *   2. Identity-patch round-trip probe: applyJsoncPatch(source, identity remove).
+     *      If output is NOT byte-identical to source: refuse with `settings-jsonc-rewrite-failed`.
+     *   3. Translate op.patch via jsoncPatchPath; if untranslatable: `patch-produces-invalid-json`.
+     *   4. Apply patch via applyJsoncPatch → patchedOnce.
+     *   5. Apply patch again → patchedTwice; if patchedOnce !== patchedTwice: `patch-not-idempotent`.
+     *   Return { ok: true, plannedBytes }.
      */
     preApply: async (op) => {
       const source = await readFile(op.targetPath, "utf8");
@@ -796,12 +846,66 @@ const _jsonRewriteHandler = Object.freeze({
       try {
         parsed = JSON.parse(source);
       } catch {
-        const reason = hasJsoncComments(source)
-          ? "settings-jsonc-detected"
-          : "settings-shape-unknown";
-        return new PreApplyRefusal({ reason, targetPath: op.targetPath });
+        // JSONC path (v0.4 Q4 ruling).
+        if (!hasJsoncComments(source)) {
+          return new PreApplyRefusal({ reason: "settings-shape-unknown", targetPath: op.targetPath });
+        }
+
+        // Identity-patch round-trip probe: remove a key that cannot exist so
+        // the probe edit list is empty → output must be byte-equal to source.
+        // This validates that jsonc-parser can faithfully round-trip this file.
+        let probeOut;
+        try {
+          probeOut = applyJsoncPatch(source, { op: "remove", path: ["__jsonc_probe__"] });
+        } catch {
+          return new PreApplyRefusal({
+            reason: "settings-jsonc-rewrite-failed",
+            targetPath: op.targetPath,
+            message: "jsonc-parser identity probe threw during round-trip"
+          });
+        }
+        if (probeOut !== source) {
+          return new PreApplyRefusal({
+            reason: "settings-jsonc-rewrite-failed",
+            targetPath: op.targetPath,
+            message: "identity round-trip diverged: output is not byte-identical to source"
+          });
+        }
+
+        // Translate and apply the patch via jsonc-parser.
+        let patchedOnce;
+        try {
+          patchedOnce = applyJsoncPatch(source, op.patch);
+        } catch (err) {
+          return new PreApplyRefusal({
+            reason: "patch-produces-invalid-json",
+            targetPath: op.targetPath,
+            message: `jsonc patch translation failed: ${err.message}`
+          });
+        }
+
+        // Idempotency check: apply the patch a second time; output must be byte-equal.
+        let patchedTwice;
+        try {
+          patchedTwice = applyJsoncPatch(patchedOnce, op.patch);
+        } catch (err) {
+          return new PreApplyRefusal({
+            reason: "patch-not-idempotent",
+            targetPath: op.targetPath,
+            message: `Second jsonc apply threw: ${err.message}`
+          });
+        }
+        if (patchedOnce !== patchedTwice) {
+          return new PreApplyRefusal({
+            reason: "patch-not-idempotent",
+            targetPath: op.targetPath
+          });
+        }
+
+        return { ok: true, plannedBytes: Buffer.byteLength(patchedOnce, "utf8") };
       }
 
+      // Plain-JSON path (unchanged from v0.3).
       let firstApply;
       try {
         firstApply = applyPatch(parsed, op.patch);
@@ -853,19 +957,36 @@ const _jsonRewriteHandler = Object.freeze({
     },
 
     /**
-     * apply — read original → parse → applyPatch → JSON.stringify → atomicWrite.
-     * Returns { content } so the caller can compute sha256After.
+     * apply — read original → patch → atomicWrite. Returns { content }.
+     *
+     * JSONC path (v0.4 Q4): source has JSONC comments → use applyJsoncPatch()
+     * to preserve comments byte-for-byte outside the edit window.
+     *
+     * Plain-JSON path (v0.3, unchanged): JSON.parse → applyPatch → JSON.stringify.
      *
      * Re-reads + re-parses on every call so this is safe to invoke after a
      * snapshot in the canonical sequence: preApply → snapshot → apply → verify.
-     * If preApply already passed, parse will not throw here barring concurrent
-     * mutation (which the upstream drift check in applyOperation catches).
      */
     apply: async (op) => {
       const source = await readFile(op.targetPath, "utf8");
-      const parsed = JSON.parse(source);
-      const result = applyPatch(parsed, op.patch);
-      const out = JSON.stringify(result, null, 2) + os.EOL;
+      let out;
+      let isJson = true;
+      try {
+        JSON.parse(source);
+      } catch {
+        isJson = false;
+      }
+
+      if (!isJson && hasJsoncComments(source)) {
+        // JSONC path: use jsonc-parser to preserve comments byte-for-byte.
+        out = applyJsoncPatch(source, op.patch);
+      } else {
+        // Plain-JSON path (v0.3 behaviour, unchanged).
+        const parsed = JSON.parse(source);
+        const result = applyPatch(parsed, op.patch);
+        out = JSON.stringify(result, null, 2) + os.EOL;
+      }
+
       await atomicWrite(op.targetPath, out);
       return { content: out };
     },

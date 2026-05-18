@@ -1,0 +1,9 @@
+{
+  // line comment at top
+  "model": "claude-sonnet-4-5",
+  /* block comment before hooks */
+  "hooks": {
+    // inline comment inside hooks
+    "Stop": []
+  }
+}

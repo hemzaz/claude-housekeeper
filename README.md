@@ -360,6 +360,17 @@ npm run lint
 npm run format
 ```
 
+### Runtime dependency (v0.4)
+
+v0.4 introduces one runtime dependency: `jsonc-parser` (Microsoft, MIT licence,
+zero transitive dependencies). It is used by
+`MUTATION_REGISTRY["json-rewrite"].preApply` and `.apply` to perform
+comment-preserving JSONC rewrites via `modify()` + `applyEdits()`, so that
+`settings.json` files containing `//` line comments or `/* */` block comments
+are hardened without silently discarding the user's comments
+(`docs/design/v0.4-design.md §3.5`, platform memo §4.4). All other modules
+remain pure Node.js built-ins with no external dependencies.
+
 ### Pre-commit hook
 
 A forbidden-language check runs automatically before each commit. The hook
