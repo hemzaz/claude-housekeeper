@@ -166,6 +166,55 @@ v0.3 does not touch either schema version. A future release that
 needs to break either line will move the package to v1.0 in the same
 release per §2.
 
+### v0.4 confirmation: learning loop, MCP rewrite, plugin pruning, and lock.history are additive (T-702)
+
+The v0.4 release line adds multiple surfaces. All are additive under §2
+and the bullets above; none triggers v1.0.
+
+1. **New top-level commands `learn` and `prune`.** Both extend the CLI
+   surface without removing or altering existing commands or flags.
+   Per §1.6, adding a new command is additive. The `learn` command's
+   flags (`--json`, `--prune --older-than=<days>`,
+   `--mark-false-positive <op_id>`) and the `prune` command's table
+   output are new surfaces; no existing flag semantics change.
+
+2. **New flag `--mcp-command-rewrite=<old>=<new>` on `harden`.** A
+   new flag on an existing command is additive per §1.6. No existing
+   `harden` flag semantics change.
+
+3. **New detector ids `plugin.unused_past_grace` and
+   `settings.jsonc_detected`.** Adding a detector id is additive per
+   §1.1. `settings.jsonc_detected` was introduced in v0.3 as a refusal
+   class; the detector-id form is the v0.4 canonical name and is
+   treated as additive from the v0.4 baseline forward.
+
+4. **New refusal classes `mcp-rewrite-target-missing`,
+   `mcp-rewrite-target-not-executable`, `mcp-rewrite-source-not-found`,
+   and `prune-history-unavailable`.** Adding a new refusal `class` or
+   `reason` is additive per §1.2.
+
+5. **New optional report field `falsePositiveSeenBefore` on
+   `findings[]`.** Adding an optional field is additive per §1.3.
+   Already present in the stable-fields table of
+   [`docs/schema-stability.md`](./schema-stability.md#stable-fields-for-01).
+
+6. **New on-disk surfaces `learning/` and `lock.history`.** These are
+   new paths under `<home>/.claude/housekeeper/`; they do not change
+   the shape of any existing file. Adding new on-disk surfaces is
+   additive. Schema for these surfaces is documented in
+   [`docs/schema-stability.md §v0.4 Addenda`](./schema-stability.md#v04-addenda-t-700).
+
+7. **Reserved mutation kind `json-rewrite`.** The kind identifier is
+   reserved for Phase 4 (T-400) but not yet materialised. When it
+   ships, adding it to `MUTATION_REGISTRY` is additive per §2 (same
+   pattern as `settings-rewrite` in v0.3).
+
+None of these additions require a `schemaVersion` bump. Report
+`schemaVersion` stays `"0.1"`; manifest `schemaVersion` stays `"0.2"`;
+`learnSchemaVersion` is a new independent version field that starts at
+`"0.4"` and moves on its own line per the same "own line" rule from
+§1.3 and §1.4.
+
 ### v1.0 — major, breaking change required
 
 A major release is justified when a stable surface needs to change in a
