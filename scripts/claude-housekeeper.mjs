@@ -36,7 +36,8 @@ import {
   validateHardenPlan,
   executeHardenPlan,
   HardenPlanDriftError,
-  HardenLockHeldError
+  HardenLockHeldError,
+  parseMcpCommandRewrite
 } from "./lib/harden-plan.mjs";
 import {
   readSummary,
@@ -113,6 +114,12 @@ Options:
   --batch=<n>         Maximum number of --target/--path pairs to process in
                         one batch (default 10, max 50). Excludes
                         settings-rewrite ops per v0.3 design C6.
+  --mcp-command-rewrite=<old>=<new>
+                      For harden --target=settings.mcp_command_missing: rewrite
+                        the broken MCP server command to <new> instead of
+                        removing the entry. <old> must match the current command
+                        field; <new> must exist on disk and be executable.
+                        Both sides are absolute paths separated by the first =.
   -h, --help          Show this help and exit.
   -v, --version       Print version and exit.
 
@@ -169,7 +176,9 @@ function parseArgs(argv) {
     // learn subcommand flags
     prune: false,
     olderThan: null,
-    markFalsePositive: null
+    markFalsePositive: null,
+    // harden MCP rewrite flag (T-200)
+    mcpCommandRewrite: null
   };
 
   for (const arg of args) {
@@ -218,6 +227,12 @@ function parseArgs(argv) {
     else if (arg === "--mark-false-positive") options.markFalsePositive = "__PENDING__";
     else if (command === "learn" && options.markFalsePositive === "__PENDING__") {
       options.markFalsePositive = arg;
+    }
+    else if (arg.startsWith("--mcp-command-rewrite=")) {
+      const raw = arg.slice("--mcp-command-rewrite=".length);
+      // parseMcpCommandRewrite throws on malformed input; the catch in the
+      // top-level try/catch converts that to a parse-time exit 2 (T-200).
+      options.mcpCommandRewrite = parseMcpCommandRewrite(raw);
     }
     else throw new Error(`Unknown argument: ${arg} — run \`claude-housekeeper --help\` for usage.`);
   }
@@ -652,7 +667,8 @@ async function runHardenInner(options) {
   if (!options.yes) {
     const plan = await composeHardenPlan(options.home, {
       target: options.target,
-      path: options.path
+      path: options.path,
+      mcpCommandRewrite: options.mcpCommandRewrite || null
     });
     if (options.json) {
       printJson({ plan });
@@ -678,7 +694,8 @@ async function runHardenInner(options) {
   try {
     const plan = await composeHardenPlan(options.home, {
       target: options.target,
-      path: options.path
+      path: options.path,
+      mcpCommandRewrite: options.mcpCommandRewrite || null
     });
 
     if (plan.refused.length > 0) {
