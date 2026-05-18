@@ -148,7 +148,7 @@ validates the heuristic.
   - Verify: against fixture prints exactly one row for stale plugin
   - blockedBy: T-300
 
-- [x] **T-302** Fixture: `plugin-unused-past-grace/`
+- [x] **T-302** Fixture: `plugin-not-referenced-past-grace/`
   - blockedBy: T-300
 
 - [x] **T-303** Refusal class `prune-history-unavailable`
@@ -164,90 +164,90 @@ validates the heuristic.
 
 ## Phase 4 — Harden non-settings surfaces (P4)
 
-- [ ] **T-400** Q2 ruling — `settings-rewrite` vs `json-rewrite` kind
+- [x] **T-400** Q2 ruling — `settings-rewrite` vs `json-rewrite` kind
       shape lands in `MUTATION_REGISTRY`
   - Verify: all v0.3 settings-rewrite tests pass byte-for-byte
   - blockedBy: T-D04 (Q2)
 
-- [ ] **T-401** `registry.command_dangling` detector + harden target
+- [x] **T-401** `registry.command_dangling` detector + harden target
   - Verify: fixture asserts patch removes dangling entry, preserves
     others byte-for-byte
   - blockedBy: T-400
 
-- [ ] **T-402** `hooks.config_dangling` detector + harden target
+- [x] **T-402** `hooks.config_dangling` detector + harden target
   - blockedBy: T-400
 
-- [ ] **T-403** `skills.entry_dangling` detector + harden target
+- [x] **T-403** `skills.entry_dangling` detector + harden target
   - blockedBy: T-400
 
-- [ ] **T-404** README "Current Checks" table refresh — three new
+- [x] **T-404** README "Current Checks" table refresh — three new
       hardenable detectors
   - blockedBy: T-401, T-402, T-403
 
-- [ ] **T-405** `test/harden-nonsettings.test.mjs` — 15+ tests
+- [x] **T-405** `test/harden-nonsettings.test.mjs` — 15+ tests
       (5 per target × happy / refusal / rollback)
 
 ---
 
 ## Phase 5 — JSONC v2 (P5)
 
-- [ ] **T-500** Q4 ruling — parser adoption (or stay refused)
+- [x] **T-500** Q4 ruling — parser adoption (or stay refused)
   - Scope: install chosen library; add to `package.json` if (a) or (b)
   - blockedBy: T-D04 (Q4)
 
-- [ ] **T-501** Round-trip fidelity test on 5 JSONC fixtures
+- [x] **T-501** Round-trip fidelity test on 5 JSONC fixtures
   - Verify: identity patch yields byte-equal output
   - blockedBy: T-500
 
-- [ ] **T-502** Replace `settings-jsonc-detected` with
+- [x] **T-502** Replace `settings-jsonc-detected` with
       `settings-jsonc-rewrite-failed`
   - Verify: previously-refusing JSONC fixture now hardens (or refuses
     with new class on parser failure)
   - blockedBy: T-501
 
-- [ ] **T-503** Update `docs/design/v0.3-design.md §2.2` cross-reference
+- [x] **T-503** Update `docs/design/v0.3-design.md §2.2` cross-reference
       noting Q2 v0.3 ruling is superseded by Q4 v0.4 ruling
   - blockedBy: T-502
 
-- [ ] **T-504** `test/jsonc-rewrite.test.mjs` — 10+ tests across the 5
+- [x] **T-504** `test/jsonc-rewrite.test.mjs` — 10+ tests across the 5
       fixtures × identity / single-key / nested / divergence-refusal
 
 ---
 
 ## Phase 6 — Batch stream (P6) + release prep
 
-- [ ] **T-600** Q5 ruling — chunking model
+- [x] **T-600** Q5 ruling — chunking model
   - blockedBy: T-D04 (Q5)
 
-- [ ] **T-601** `--stream` flag in `clean --batch=<n>` parser
+- [x] **T-601** `--stream` flag in `clean --batch=<n>` parser
   - Verify: `--help` shows flag; parsing rejects `--stream` with n ≤ 50
 
-- [ ] **T-602** Stream plan composition — generator of `{target, path}`
+- [x] **T-602** Stream plan composition — generator of `{target, path}`
       pairs
   - blockedBy: T-600, T-601
 
-- [ ] **T-603** Per-chunk snapshot + apply + verify; per-chunk rollback
+- [x] **T-603** Per-chunk snapshot + apply + verify; per-chunk rollback
       in reverse on stream halt
   - blockedBy: T-602
 
-- [ ] **T-604** Refusal classes `stream-chunk-budget-exceeded` and
+- [x] **T-604** Refusal classes `stream-chunk-budget-exceeded` and
       `stream-resume-not-supported`
   - blockedBy: T-603
 
-- [ ] **T-605** `test/clean-batch-stream.test.mjs` — 12+ tests covering
+- [x] **T-605** `test/clean-batch-stream.test.mjs` — 12+ tests covering
       chunk boundary, per-chunk failure halt, rollback-of-stream
 
-- [ ] **T-606** Plugin marketplace listing prep (N5): polish
+- [x] **T-606** Plugin marketplace listing prep (N5): polish
       `.claude-plugin/plugin.json` keywords; add screenshot directive
       if marketplace supports; README polish. Verify: `claude plugin
       validate` (if available) passes
-- [ ] **T-607** CHANGELOG entry under `[Unreleased]` for v0.4.0
-- [ ] **T-608** `docs/migration-v0.3-to-v0.4.md` upgrade guide
-- [ ] **T-609** README updates — `learn`, `prune`, MCP rewrite, P4
+- [x] **T-607** CHANGELOG entry under `[Unreleased]` for v0.4.0
+- [x] **T-608** `docs/migration-v0.3-to-v0.4.md` upgrade guide
+- [x] **T-609** README updates — `learn`, `prune`, MCP rewrite, P4
       surfaces, JSONC v2, `--stream`, current-checks table refresh
-- [ ] **T-610** Site (`docs/index.html`) — version pin + new subcommand
+- [x] **T-610** Site (`docs/index.html`) — version pin + new subcommand
       mention
-- [ ] **T-611** Compatibility matrix entry for v0.4.0 (Q1–Q5 recorded)
+- [x] **T-611** Compatibility matrix entry for v0.4.0 (Q1–Q5 recorded)
 
 ---
 
@@ -262,5 +262,5 @@ validates the heuristic.
       injection). blockedBy: T-D04
 - [x] **T-702** Versioning policy: confirm `learn`, `prune`, P4 ids,
       `--stream` are additive (v0.4 minor). blockedBy: Phase 1–6 land
-- [ ] **T-703** Soak script extension: exercise `learn` and `prune` as
+- [x] **T-703** Soak script extension: exercise `learn` and `prune` as
       read-only steps in `scripts/soak.sh`. blockedBy: T-104, T-301

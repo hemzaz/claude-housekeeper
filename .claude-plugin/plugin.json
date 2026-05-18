@@ -1,6 +1,6 @@
 {
   "name": "claude-housekeeper",
-  "version": "0.3.0",
+  "version": "0.4.0-beta.1",
   "description": "Read-only Claude Code home inspection for broken hooks, plugin cache drift, protected state, and missing evidence keys.",
   "author": {
     "name": "Elad"
@@ -12,7 +12,11 @@
     "claude-code",
     "plugins",
     "diagnostics",
-    "housekeeping"
+    "housekeeping",
+    "learning",
+    "prune",
+    "harden",
+    "json-rewrite"
   ],
   "commands": [
     "./commands/"

@@ -21,10 +21,14 @@ is happening before Claude starts failing mid-session.
 removes outside-grace plugin cache versions, stale concurrency locks, or
 duplicate local commands after creating a Housekeeper-owned snapshot;
 `clean --batch=<n>` aggregates multiple `file-unlink` operations under
-one manifest (v0.3.0). `harden --confirm --yes` rewrites
+one manifest (v0.3.0); `clean --batch=N --stream` chunks a large batch
+into per-chunk snapshot + apply + verify cycles (v0.4.0). `harden --confirm --yes` rewrites
 `settings.json` under the same snapshot contract to remove dangling
-hook paths or missing MCP commands (v0.3.0). `rollback <id> --confirm
---yes` restores any operation from its snapshot.
+hook paths, missing MCP commands, or to rewrite an MCP command path
+(v0.3.0 / v0.4.0). `learn` surfaces what Housekeeper has observed from
+past operations (v0.4.0). `prune` audits plugins that are candidate
+stale past the grace window (v0.4.0). `rollback <id> --confirm --yes` restores any operation
+from its snapshot.
 
 ## Command Surface
 
@@ -33,6 +37,13 @@ claude-housekeeper                                 # alias for diagnose
 claude-housekeeper diagnose                        # read-only report
 claude-housekeeper plan                            # read-only detailed findings
 claude-housekeeper verify                          # Claude CLI smoketest probes
+claude-housekeeper learn                           # learning summary (v0.4.0)
+claude-housekeeper learn --json                    # machine-readable summary
+claude-housekeeper learn --prune --older-than=30   # prune entries older than N days
+claude-housekeeper learn \
+    --mark-false-positive <op_id>                  # mark a refusal as false positive
+claude-housekeeper prune                           # audit plugins not referenced past
+                                                   # grace window (v0.4.0, audit only)
 claude-housekeeper clean                           # dry-run; refuses mutation
 claude-housekeeper clean --confirm                 # refuses without --yes
 claude-housekeeper clean --confirm --yes \
@@ -43,11 +54,18 @@ claude-housekeeper clean --confirm --yes --batch=<n> \
     --target=<id> --path=<path> \
     --target=<id> --path=<path>                    # aggregates N file-unlink ops
                                                    # under one manifest (v0.3.0)
+claude-housekeeper clean --confirm --yes \
+    --batch=<n> --stream \
+    --target=<id> --path=<path> [...]              # streams large batch in chunks;
+                                                   # requires --batch=N > 50 (v0.4.0)
 claude-housekeeper harden                          # dry-run plan view (v0.3.0)
 claude-housekeeper harden --confirm --yes \
     --target=settings.hook_path_dangling \
     --path=<absolute settings.json path>           # rewrites settings.json under
                                                    # snapshot (v0.3.0)
+claude-housekeeper harden --confirm --yes \
+    --mcp-command-rewrite=<old>=<new>              # rewrites MCP server command
+                                                   # path in settings.json (v0.4.0)
 claude-housekeeper rollback <id> --dry-run         # shows restore plan
 claude-housekeeper rollback <id> --confirm --yes   # restores from snapshot
 ```
@@ -61,10 +79,13 @@ plugin counterpart). Three more become **hardenable** in v0.3.0:
 `settings.invalid_json` (the last surfaces with a `harden` next-step but
 refuses on invocation per Q1 — see
 [`docs/migration-v0.2-to-v0.3.md`](docs/migration-v0.2-to-v0.3.md)).
-Everything else routes to `refused[]` with a structured reason — see
-[`docs/design/clean-design.md`](docs/design/clean-design.md) for the
-full taxonomy and the "Current Checks" table below for the per-detector
-status.
+Four new detectors land in v0.4.0: `plugin.unused_past_grace` (surfaced
+by `prune`), `registry.command_dangling`, `hooks.config_dangling`, and
+`registry.skills_entry_dangling` (the last three are hardenable via
+`json-rewrite`). Everything else routes to `refused[]` with a structured
+reason — see [`docs/design/clean-design.md`](docs/design/clean-design.md)
+for the full taxonomy and the "Current Checks" table below for the
+per-detector status.
 
 Scopes:
 
@@ -285,31 +306,32 @@ Status legend:
 - **never** — informational or judgment-laden by design; will not
   become cleanable. Surface only.
 
-| Detector id | Status in v0.2.0 | Hardenable in v0.3.0 |
-|---|---|---|
-| `settings.invalid_json` | planned | **candidate** (surfaces `settings-shape-unknown` refusal — design §2.1) |
-| `settings.hook_path_dangling` | planned | **hardenable** (T-300) |
-| `settings.hook_command_shell_ambiguous` | planned | no |
-| `settings.mcp_command_missing` | planned | **hardenable** (T-301) |
-| `plugin.expected_orphan` | never (locked decision Q-USER-3) | no |
-| `plugin.cache_unreferenced` | **cleanable** | no |
-| `plugin.cache_referenced_by_hook` (v0.2.0-beta) | never (protected by hook reference) | no |
-| `plugin.duplicate_registration` | never (which duplicate to keep is a judgment call) | no |
-| `plugin.cache_size` | never (size is a signal, not a verdict) | no |
-| `registry.local_skill_shadow` | planned | no |
-| `registry.local_command_identical` | **cleanable** (v0.2.0-beta.1) | no |
-| `registry.local_command_diverged` | never (intent-laden) | no |
-| `registry.broken_frontmatter` | planned | no |
-| `registry.command_dangling` | **cleanable** (v0.4.0) | no |
-| `registry.skills_entry_dangling` | **cleanable** (v0.4.0) | no |
-| `hooks.config_dangling` | no | **hardenable** (v0.4.0) |
-| `housekeeper.interrupted_operation` | recovery via `rollback <id>` or `rollback --abort <id>` | no |
-| `housekeeper.config_invalid` | planned | no |
-| `housekeeper.operations_unreadable` | never (informational) | no |
-| `housekeeper.stale_lock` (v0.2.0-beta) | **cleanable** (v0.2.0-beta.1) | no |
-| `home.not_found` | never (informational) | no |
-| `home.scan_budget_hit` | never (informational) | no |
-| `home.clean` | never (meta-detector; informational) | no |
+| Detector id | Status in v0.2.0 | Hardenable in v0.3.0 | v0.4.0 |
+|---|---|---|---|
+| `settings.invalid_json` | planned | **candidate** (surfaces `settings-shape-unknown` refusal — design §2.1) | — |
+| `settings.hook_path_dangling` | planned | **hardenable** (T-300) | — |
+| `settings.hook_command_shell_ambiguous` | planned | no | — |
+| `settings.mcp_command_missing` | planned | **hardenable** (T-301) | — |
+| `plugin.expected_orphan` | never (locked decision Q-USER-3) | no | — |
+| `plugin.cache_unreferenced` | **cleanable** | no | — |
+| `plugin.cache_referenced_by_hook` (v0.2.0-beta) | never (protected by hook reference) | no | — |
+| `plugin.duplicate_registration` | never (which duplicate to keep is a judgment call) | no | — |
+| `plugin.cache_size` | never (size is a signal, not a verdict) | no | — |
+| `plugin.unused_past_grace` | — | — | **new** — audit via `prune`; uninstall mutation in v0.4.1 |
+| `registry.local_skill_shadow` | planned | no | — |
+| `registry.local_command_identical` | **cleanable** (v0.2.0-beta.1) | no | — |
+| `registry.local_command_diverged` | never (intent-laden) | no | — |
+| `registry.broken_frontmatter` | planned | no | — |
+| `registry.command_dangling` | — | — | **new** — **hardenable** via `json-rewrite` (T-401) |
+| `registry.skills_entry_dangling` | — | — | **new** — **hardenable** via `json-rewrite` (T-403) |
+| `hooks.config_dangling` | — | — | **new** — **hardenable** via `json-rewrite` (T-402) |
+| `housekeeper.interrupted_operation` | recovery via `rollback <id>` or `rollback --abort <id>` | no | — |
+| `housekeeper.config_invalid` | planned | no | — |
+| `housekeeper.operations_unreadable` | never (informational) | no | — |
+| `housekeeper.stale_lock` (v0.2.0-beta) | **cleanable** (v0.2.0-beta.1) | no | — |
+| `home.not_found` | never (informational) | no | — |
+| `home.scan_budget_hit` | never (informational) | no | — |
+| `home.clean` | never (meta-detector; informational) | no | — |
 
 Hygiene and state findings (large logs, zombie state, corrupt backups,
 drift directories, file-history age) are deferred alongside the
@@ -338,11 +360,12 @@ Shipped:
 - **v0.2.0-beta.1 (Phase 9):** interrupted-operation recovery. `rollback --abort <id>` cancels a `snapshot_taken`/`planned` operation; `SessionStart` hook surfaces non-terminal manifests; legacy pre-v0.2 manifests are detected and reported; audit findings include recovery hints (`rollback <id>` or `rollback --abort <id>`).
 - **v0.2.0-beta.1 (Phase 10):** broadened cleanable set with a `file-unlink` mutation kind. `housekeeper.stale_lock` and `registry.local_command_identical` join `plugin.cache_unreferenced` as cleanable detectors.
 - **v0.3.0:** `harden --confirm --yes` for guarded `settings.json` rewrite through a new `settings-rewrite` mutation kind. Three settings detectors (`settings.hook_path_dangling`, `settings.mcp_command_missing`, `settings.invalid_json`) promoted to **hardenable**. `clean --batch=<n>` aggregates multiple `file-unlink` operations under one manifest (manifest-atomic, no auto-rollback). Two-phase JSONC detection splits `settings.jsonc_detected` from `settings.invalid_json`. CI version-pin check. See the [v0.2 → v0.3 migration guide](docs/migration-v0.2-to-v0.3.md).
+- **v0.4.0-beta.1:** On-disk learning loop (`learn`, `prune` subcommands; `refusals.jsonl`, `applied.jsonl`, `rollbacks.jsonl`, `state.json` under `learning/`). `lock.history` JSONL. `harden --mcp-command-rewrite=<old>=<new>` for MCP command path rewrite. `clean --batch=N --stream` for chunked streaming of large batches. Four new detectors: `plugin.unused_past_grace`, `registry.command_dangling`, `hooks.config_dangling`, `registry.skills_entry_dangling`. `json-rewrite` canonical mutation kind; `settings-rewrite` kept as back-compat alias. JSONC-aware rewrite: comments survive `harden` round-trips. Pre-commit forbidden-language hook. See the [v0.3 → v0.4 migration guide](docs/migration-v0.3-to-v0.4.md).
 
 Coming:
 
-- Local learning from false positives, protected paths, accepted plans, and rollback outcomes
-- JSONC-aware `settings.json` rewrite (deferred to v0.4 per Q2 ruling)
+- **v0.4.1:** Plugin uninstall mutation wired to `plugin.unused_past_grace` after the audit window validates the heuristic.
+- **v0.5:** Suggestion engine (proactive `nextStep` recommendations based on learning history); `--stream` resume across invocations.
 - Cross-kind batches that include `settings-rewrite` (deferred per C6 ruling)
 
 ## Known Limitations
@@ -440,9 +463,12 @@ each `settings.hook_path_dangling` / `settings.mcp_command_missing`
 finding individually.
 
 **When will JSONC be supported?**
-v0.4 will revisit JSONC parsing per the Q2 ruling. v0.3 splits
-`settings.jsonc_detected` from `settings.invalid_json` so JSONC files
-surface cleanly as a separate finding, but they are not yet hardenable.
+JSONC is supported in v0.4.0. `jsonc-parser`'s `modify()` + `applyEdits()`
+preserves `//` and `/* */` comments through the `harden` round-trip. If you
+previously saw `settings.jsonc_detected` and were advised to remove comments
+before hardening, you no longer need to. The refusal class
+`settings-jsonc-rewrite-failed` fires only when the parser's round-trip
+output diverges from the input — a conservative safety net.
 
 **Why is v0.3 only three detectors hardenable?**
 Phase 3 of v0.3 deliberately promoted the safest, most reversible
@@ -451,3 +477,45 @@ settings detectors first (`settings.hook_path_dangling`,
 intent-laden choices (which duplicate to keep, which diverged file is
 authoritative) stay surface-only — see the table under
 [Current Checks](#current-checks) for the full per-detector status.
+
+**How does learning work?**
+Every `clean` or `harden` invocation — whether it applies a change or
+refuses — appends a record to one of four JSONL files under
+`<home>/.claude/housekeeper/learning/`. `refusals.jsonl` captures what
+was refused and why. `applied.jsonl` captures what was successfully
+applied. `rollbacks.jsonl` captures what was later rolled back. A
+lightweight `state.json` file holds running counters so `learn` can
+render a summary without reading every line. Run
+`claude-housekeeper learn` to see the summary; `learn --json` for the
+machine-readable form. Use `learn --mark-false-positive <op_id>` to
+reduce the weight of a detector id that fires too aggressively on your
+home. Use `learn --prune --older-than=<days>` to trim old entries.
+
+**When should I use `prune`?**
+Run `claude-housekeeper prune` any time you want to see installed plugins
+that have not been involved in any applied operation within the 7-day
+grace window and carry no active hook or command reference. This is an
+audit-only view in v0.4.0 — no mutation occurs. The table tells you
+which plugins are candidates for uninstall so you can decide whether to
+remove them manually. v0.4.1 will wire the uninstall mutation after the
+audit window validates the heuristic against real homes.
+
+**What if `--stream` halts mid-stream?**
+When a chunk fails, `clean --stream` rolls back the completed chunks in
+reverse order and exits with a non-zero status. The partially-streamed
+manifest stays at `status: applied` with `partialApply: true`. The
+`housekeeper.interrupted_operation` detector will surface it on the next
+`diagnose` run, and `nextStep` will route to `rollback <op_id>`. Stream
+resume across invocations is not supported in v0.4.0 — restart with a
+fresh batch.
+
+**JSONC support — what changed in v0.4?**
+In v0.3, any `settings.json` containing `//` or `/* */` comments
+surfaced as `settings.jsonc_detected` at `inform` stance and was not
+hardenable. In v0.4, `jsonc-parser` (Microsoft, MIT) preserves comments
+through the rewrite via `modify()` + `applyEdits()`. The one new refusal
+class is `settings-jsonc-rewrite-failed`, which fires only when the
+parser's round-trip output diverges from the original — a per-file
+safety net. The `settings.jsonc_detected` finding itself is now
+hardenable: running `harden --confirm --yes` on a JSONC file will
+succeed and preserve your comments.
