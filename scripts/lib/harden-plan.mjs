@@ -13,21 +13,20 @@
 // keeps the two pipelines decoupled).
 
 import { createHash } from "node:crypto";
-import { open, unlink, mkdir, readFile, copyFile } from "node:fs/promises";
+import { copyFile } from "node:fs/promises";
 import { existsSync, readFileSync } from "node:fs";
 import { join, dirname, sep as pathSep } from "node:path";
-import os from "node:os";
 import { assembleReport, hasJsonComments } from "./audit.mjs";
 import {
   takeSnapshot,
   applyOperation,
   verify,
   gcSnapshots,
-  generateOpId,
   MUTATION_REGISTRY,
   PreApplyRefusal
 } from "./snapshot.mjs";
 import { composeCleanPlan } from "./clean-plan.mjs";
+import { acquireLock, releaseLock, LockHeldError as _LockHeldError } from "./lock.mjs";
 
 // ── Error classes (mirror clean-plan.mjs shapes) ────────────────────────────
 
@@ -531,68 +530,6 @@ export async function validateHardenPlan(plan, home) {
   return { ...plan, validatedAt: new Date().toISOString() };
 }
 
-// ── Lockfile helpers (local to harden; parity with clean-plan.mjs) ─────────
-
-const LOCK_STALE_WINDOW_MS = 30 * 60 * 1000; // 30 minutes
-
-async function acquireLock(home) {
-  const lockDir = join(home, "housekeeper");
-  const lockPath = join(lockDir, "lock");
-
-  await mkdir(lockDir, { recursive: true });
-
-  const opId = generateOpId();
-  const now = new Date();
-  const manifest = {
-    pid: process.pid,
-    hostname: os.hostname(),
-    opId,
-    startedAt: now.toISOString(),
-    stalenessAt: new Date(now.getTime() + LOCK_STALE_WINDOW_MS).toISOString()
-  };
-
-  let fh;
-  try {
-    fh = await open(lockPath, "wx");
-    await fh.writeFile(JSON.stringify(manifest, null, 2) + os.EOL);
-    await fh.close();
-    return lockPath;
-  } catch (err) {
-    if (fh) {
-      try { await fh.close(); } catch { /* ignore */ }
-    }
-    if (err.code === "EEXIST") {
-      try {
-        const raw = await readFile(lockPath, "utf8");
-        const existing = JSON.parse(raw);
-        throw new HardenLockHeldError(existing);
-      } catch (inner) {
-        if (inner instanceof HardenLockHeldError) throw inner;
-        try { await unlink(lockPath); } catch { /* ignore */ }
-        let fh2;
-        try {
-          fh2 = await open(lockPath, "wx");
-          await fh2.writeFile(JSON.stringify(manifest, null, 2) + os.EOL);
-          await fh2.close();
-          return lockPath;
-        } catch {
-          if (fh2) { try { await fh2.close(); } catch { /* ignore */ } }
-          throw err;
-        }
-      }
-    }
-    throw err;
-  }
-}
-
-async function releaseLock(lockPath) {
-  try {
-    await unlink(lockPath);
-  } catch {
-    /* ignore — already gone */
-  }
-}
-
 // ── executeHardenPlan ──────────────────────────────────────────────────────
 
 /**
@@ -605,32 +542,19 @@ async function releaseLock(lockPath) {
  */
 export async function executeHardenPlan(validatedPlan, home) {
   const snapshotHome = dirname(home);
-  const lockPath = join(home, "housekeeper", "lock");
 
-  if (existsSync(lockPath)) {
-    let stale = false;
-    try {
-      const raw = await readFile(lockPath, "utf8");
-      const existing = JSON.parse(raw);
-      const stalenessAt = new Date(existing.stalenessAt).getTime();
-      if (Date.now() < stalenessAt) {
-        throw new HardenLockHeldError(existing);
-      }
-      stale = true;
-    } catch (err) {
-      if (err instanceof HardenLockHeldError) throw err;
-      // Unreadable / unparseable lock — treat as stale.
-      stale = true;
+  // acquireLock handles stale-lock detection and O_EXCL; throws LockHeldError
+  // from lock.mjs — re-throw as HardenLockHeldError to preserve the public API.
+  let lockHandle;
+  try {
+    lockHandle = await acquireLock(home);
+  } catch (err) {
+    if (err && err.code === "lock-held") {
+      throw new HardenLockHeldError(err.lockManifest);
     }
-    if (stale) {
-      // Remove the stale lock so acquireLock's O_EXCL succeeds. The two-step
-      // (probe → unlink → re-acquire) intentionally races: any concurrent
-      // process that wins the re-acquire raises LockHeldError on our side.
-      try { await unlink(lockPath); } catch { /* already gone */ }
-    }
+    throw err;
   }
 
-  const acquiredPath = await acquireLock(home);
   const handler = MUTATION_REGISTRY["settings-rewrite"];
 
   try {
@@ -672,7 +596,7 @@ export async function executeHardenPlan(validatedPlan, home) {
 
     return finalManifest;
   } finally {
-    await releaseLock(acquiredPath);
+    await releaseLock(lockHandle, "verified");
   }
 }
 
