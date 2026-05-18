@@ -24,6 +24,7 @@ import {
 } from "./snapshot.mjs";
 import { loadConfig, pathMatchesProtection } from "./policy.mjs";
 import { acquireLock, releaseLock, LockHeldError, LOCK_STALE_WINDOW_MS } from "./lock.mjs";
+import { appendRefusal, appendApplied } from "./learning.mjs";
 
 // suppress unused-import warning for budget constants used in JSDoc
 void MAX_OPERATION_FILES;
@@ -684,6 +685,17 @@ export async function composeCleanPlan(home, options = {}) {
         nextStep: nextStepFor(verdict.reason),
         exitCode: 2
       });
+      try {
+        await appendRefusal(home, {
+          command: "clean",
+          target: finding.id,
+          reason: verdict.reason,
+          refusalClass: verdict.reason,
+          targetPath: finding.targetPath || ""
+        });
+      } catch (err) {
+        process.stderr.write(`[clean-plan] appendRefusal failed: ${err && err.message}\n`);
+      }
       continue;
     }
 
@@ -746,6 +758,17 @@ export async function composeCleanPlan(home, options = {}) {
         nextStep: `Re-run \`clean --confirm --yes --target=${op.detectorId} --path=${op.targetPath}\` to address the remaining findings.`,
         exitCode: 2
       });
+      try {
+        await appendRefusal(home, {
+          command: "clean",
+          target: op.detectorId,
+          reason: "no-mutation-mapping-in-v0.2",
+          refusalClass: "no-mutation-mapping-in-v0.2",
+          targetPath: op.targetPath
+        });
+      } catch (err) {
+        process.stderr.write(`[clean-plan] appendRefusal failed: ${err && err.message}\n`);
+      }
     }
     operations.length = 0;
     operations.push(kept);
@@ -881,10 +904,33 @@ export async function executeCleanPlan(plan, home) {
       if (appliedManifest.partialApply) {
         // Q5: partial apply surfaces via housekeeper.interrupted_operation.
         finalManifest = appliedManifest;
+        try {
+          await appendApplied(home, {
+            opId: appliedManifest.id,
+            status: appliedManifest.status,
+            command: "clean",
+            targets: [op.targetPath],
+            filesCount: op.expandedFiles ? op.expandedFiles.length : 0,
+            partialApply: true
+          });
+        } catch (err) {
+          process.stderr.write(`[clean-plan] appendApplied failed: ${err && err.message}\n`);
+        }
         break;
       }
 
       finalManifest = await verify(opId, snapshotHome);
+      try {
+        await appendApplied(home, {
+          opId: finalManifest.id,
+          status: finalManifest.status,
+          command: "clean",
+          targets: [op.targetPath],
+          filesCount: op.expandedFiles ? op.expandedFiles.length : 0
+        });
+      } catch (err) {
+        process.stderr.write(`[clean-plan] appendApplied failed: ${err && err.message}\n`);
+      }
     }
 
     return finalManifest;
@@ -928,19 +974,31 @@ export async function composeBatchCleanPlan(home, options = {}) {
   // C19: pair-count cap. Fires before any per-pair compose so we don't pay
   // assembleReport N times for a doomed batch.
   if (pairs.length > batchCap) {
+    const batchCapRefusal = {
+      class: "CleanPlanRefusal",
+      reason: "batch-pair-cap-exceeded",
+      targetPath: "",
+      detectorId: "",
+      message: `Got ${pairs.length} pairs; batch cap is ${batchCap}`,
+      nextStep: nextStepFor("batch-pair-cap-exceeded"),
+      exitCode: 2
+    };
+    try {
+      await appendRefusal(home, {
+        command: "clean",
+        target: "",
+        reason: "batch-pair-cap-exceeded",
+        refusalClass: "batch-pair-cap-exceeded",
+        targetPath: ""
+      });
+    } catch (err) {
+      process.stderr.write(`[clean-plan] appendRefusal failed: ${err && err.message}\n`);
+    }
     return {
       schemaVersion: "0.2",
       home,
       operations: [],
-      refused: [{
-        class: "CleanPlanRefusal",
-        reason: "batch-pair-cap-exceeded",
-        targetPath: "",
-        detectorId: "",
-        message: `Got ${pairs.length} pairs; batch cap is ${batchCap}`,
-        nextStep: nextStepFor("batch-pair-cap-exceeded"),
-        exitCode: 2
-      }],
+      refused: [batchCapRefusal],
       pairs,
       composedAt: new Date().toISOString(),
       reportHash: "",
@@ -997,6 +1055,17 @@ export async function composeBatchCleanPlan(home, options = {}) {
     || totalBytes > BATCH_AGGREGATE_BYTE_LIMIT
   ) {
     // Convert to refusal-set (mirrors per-pair pattern); empty operations.
+    try {
+      await appendRefusal(home, {
+        command: "clean",
+        target: "",
+        reason: "batch-exceeds-aggregate-budget",
+        refusalClass: "batch-exceeds-aggregate-budget",
+        targetPath: ""
+      });
+    } catch (err) {
+      process.stderr.write(`[clean-plan] appendRefusal failed: ${err && err.message}\n`);
+    }
     return {
       schemaVersion: "0.2",
       home,
@@ -1117,9 +1186,34 @@ export async function executeBatchCleanPlan(plan, home) {
 
     // Q3 ruling: if any per-file apply failed, manifest stays `applied` with
     // partialApply=true and we do NOT call verify (status would not advance).
-    if (applied.partialApply) return applied;
+    if (applied.partialApply) {
+      try {
+        await appendApplied(home, {
+          opId: applied.id,
+          status: applied.status,
+          command: "clean",
+          targets: plan.operations.map((op) => op.targetPath),
+          filesCount: targets.length,
+          partialApply: true
+        });
+      } catch (err) {
+        process.stderr.write(`[clean-plan] appendApplied failed: ${err && err.message}\n`);
+      }
+      return applied;
+    }
 
     const verified = await verify(opId, snapshotHome);
+    try {
+      await appendApplied(home, {
+        opId: verified.id,
+        status: verified.status,
+        command: "clean",
+        targets: plan.operations.map((op) => op.targetPath),
+        filesCount: targets.length
+      });
+    } catch (err) {
+      process.stderr.write(`[clean-plan] appendApplied failed: ${err && err.message}\n`);
+    }
     return verified;
   } finally {
     await releaseLock(lockHandle, "verified");

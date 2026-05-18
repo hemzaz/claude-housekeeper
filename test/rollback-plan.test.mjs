@@ -417,6 +417,56 @@ test("Phase 10: file-unlink op rolls back through file-restore-from-snapshot", a
   assert.equal(readFileSync(filePath, "utf8"), originalContent, "content must be byte-identical");
 });
 
+// ── T-103: appendApplied + appendRollback wired into execute paths ────────────
+
+test("T-103 executeCleanPlan + executeRollbackPlan: applied.jsonl and rollbacks.jsonl each get 1 line", async () => {
+  const { claudeHome, opId } = await makeAppliedOperation();
+
+  // applied.jsonl — verify was called inside makeAppliedOperation (snapshot→apply→verify).
+  // That path goes through snapshot.mjs verify(), not executeCleanPlan, so applied.jsonl
+  // is NOT written here. Instead re-run a fresh clean → rollback pair via the plan APIs
+  // to exercise both execute paths.
+
+  // The operation from makeAppliedOperation is already in verified state; use it
+  // to exercise the rollback path only. For the clean path, run a new operation.
+  const parent2 = await (await import("node:fs/promises")).mkdtemp(
+    path.join((await import("node:os")).tmpdir(), "ck-t103-")
+  );
+  const claudeHome2 = path.join(parent2, ".claude");
+  const { mkdirSync: mkdS2, writeFileSync: wfS2, utimesSync: utS2, existsSync: exS2 } = await import("node:fs");
+  const { composeCleanPlan, validateCleanPlan, executeCleanPlan } = await import("../scripts/lib/clean-plan.mjs");
+
+  mkdS2(path.join(claudeHome2, "plugins"), { recursive: true });
+  wfS2(path.join(claudeHome2, "settings.json"), "{}\n");
+  const cacheDir = path.join(claudeHome2, "plugins", "cache", "t-market", "t-tool", "1.0.0");
+  mkdS2(cacheDir, { recursive: true });
+  wfS2(path.join(cacheDir, "plugin.json"), JSON.stringify({ name: "t-tool", version: "1.0.0" }) + "\n");
+  const longAgo = (Date.now() - 30 * 24 * 60 * 60 * 1000) / 1000;
+  utS2(cacheDir, longAgo, longAgo);
+
+  const plan = await composeCleanPlan(claudeHome2, { target: "plugin.cache_unreferenced" });
+  const validated = await validateCleanPlan(plan, claudeHome2);
+  const cleanManifest = await executeCleanPlan(validated, claudeHome2);
+  assert.equal(cleanManifest.status, "verified");
+
+  const { readFile } = await import("node:fs/promises");
+  const learningDir2 = path.join(claudeHome2, ".claude", "housekeeper", "learning");
+  const appliedText = await readFile(path.join(learningDir2, "applied.jsonl"), "utf8");
+  const appliedLines = appliedText.split("\n").filter((l) => l.trim().length > 0);
+  assert.equal(appliedLines.length, 1, "applied.jsonl must have exactly 1 line after executeCleanPlan");
+
+  // Now rollback that operation.
+  const { composeRollbackPlan: cRP, validateRollbackPlan: vRP, executeRollbackPlan: eRP } =
+    await import("../scripts/lib/rollback-plan.mjs");
+  const rbPlan = await vRP(await cRP(claudeHome2, cleanManifest.id), claudeHome2);
+  const rbManifest = await eRP(rbPlan, claudeHome2);
+  assert.equal(rbManifest.status, "rolled_back");
+
+  const rollbacksText = await readFile(path.join(learningDir2, "rollbacks.jsonl"), "utf8");
+  const rollbackLines = rollbacksText.split("\n").filter((l) => l.trim().length > 0);
+  assert.equal(rollbackLines.length, 1, "rollbacks.jsonl must have exactly 1 line after executeRollbackPlan");
+});
+
 test("Phase 10: file-unlink with corrupted snapshot → SnapshotIntegrityError on validate", async () => {
   const { claudeHome, opId, filePath, manifest } = await makeAppliedFileUnlinkOperation();
 

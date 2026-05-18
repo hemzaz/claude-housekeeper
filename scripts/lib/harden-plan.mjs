@@ -27,6 +27,7 @@ import {
 } from "./snapshot.mjs";
 import { composeCleanPlan } from "./clean-plan.mjs";
 import { acquireLock, releaseLock, LockHeldError as _LockHeldError } from "./lock.mjs";
+import { appendRefusal, appendApplied } from "./learning.mjs";
 
 // ── Error classes (mirror clean-plan.mjs shapes) ────────────────────────────
 
@@ -317,6 +318,24 @@ async function looksLikeNetworkFs(targetPath, opts) {
   return false;
 }
 
+// ── Learning helpers ─────────────────────────────────────────────────────────
+
+// Best-effort appendRefusal; logs to stderr on failure (learning surface is
+// observational, not load-bearing per v0.4-design.md §3 P1).
+async function safeAppendRefusal(home, detectorId, reason, targetPath) {
+  try {
+    await appendRefusal(home, {
+      command: "harden",
+      target: detectorId,
+      reason,
+      refusalClass: reason,
+      targetPath: targetPath || ""
+    });
+  } catch (err) {
+    process.stderr.write(`[harden-plan] appendRefusal failed: ${err && err.message}\n`);
+  }
+}
+
 // ── composeHardenPlan ──────────────────────────────────────────────────────
 
 /**
@@ -369,6 +388,7 @@ export async function composeHardenPlan(home, options = {}) {
       nextStep: nextStepFor("no-finding-for-target"),
       exitCode: 2
     });
+    await safeAppendRefusal(home, targetDetectorId, "no-finding-for-target", targetPath);
     return { schemaVersion: "0.2", home, targetDetectorId, targetPath, operations, refused, composedAt, reportHash };
   }
 
@@ -397,6 +417,7 @@ export async function composeHardenPlan(home, options = {}) {
       nextStep: r.nextStep,
       exitCode: 2
     });
+    await safeAppendRefusal(home, r.detectorId, r.reason, r.targetPath);
   }
 
   // If any shared-classifier refusal fired, do not proceed to harden-specific
@@ -418,6 +439,7 @@ export async function composeHardenPlan(home, options = {}) {
         nextStep: nextStepFor("no-mutation-mapping-in-v0.3"),
         exitCode: 2
       });
+      await safeAppendRefusal(home, f.id, "no-mutation-mapping-in-v0.3", f.targetPath);
     }
     return { schemaVersion: "0.2", home, targetDetectorId, targetPath, operations, refused, composedAt, reportHash };
   }
@@ -438,6 +460,7 @@ export async function composeHardenPlan(home, options = {}) {
         nextStep: nextStepFor("settings-network-filesystem"),
         exitCode: 2
       });
+      await safeAppendRefusal(home, finding.id, "settings-network-filesystem", tp);
       continue;
     }
 
@@ -455,6 +478,7 @@ export async function composeHardenPlan(home, options = {}) {
         nextStep: nextStepFor(preApplyResult.reason),
         exitCode: 2
       });
+      await safeAppendRefusal(home, finding.id, preApplyResult.reason, tp);
       continue;
     }
 
@@ -489,6 +513,7 @@ export async function composeHardenPlan(home, options = {}) {
         nextStep: `Re-run \`harden --confirm --yes --target=${op.detectorId} --path=${op.targetPath}\` to address the remaining findings.`,
         exitCode: 2
       });
+      await safeAppendRefusal(home, op.detectorId, "no-mutation-mapping-in-v0.3", op.targetPath);
     }
     operations.length = 0;
     operations.push(kept);
@@ -588,10 +613,33 @@ export async function executeHardenPlan(validatedPlan, home) {
 
       if (appliedManifest.partialApply) {
         finalManifest = appliedManifest;
+        try {
+          await appendApplied(home, {
+            opId: appliedManifest.id,
+            status: appliedManifest.status,
+            command: "harden",
+            targets: [op.targetPath],
+            filesCount: op.expandedFiles ? op.expandedFiles.length : 0,
+            partialApply: true
+          });
+        } catch (err) {
+          process.stderr.write(`[harden-plan] appendApplied failed: ${err && err.message}\n`);
+        }
         break;
       }
 
       finalManifest = await verify(opId, snapshotHome);
+      try {
+        await appendApplied(home, {
+          opId: finalManifest.id,
+          status: finalManifest.status,
+          command: "harden",
+          targets: [op.targetPath],
+          filesCount: op.expandedFiles ? op.expandedFiles.length : 0
+        });
+      } catch (err) {
+        process.stderr.write(`[harden-plan] appendApplied failed: ${err && err.message}\n`);
+      }
     }
 
     return finalManifest;
