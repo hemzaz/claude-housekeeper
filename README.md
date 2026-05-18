@@ -357,6 +357,16 @@ npm run lint
 npm run format
 ```
 
+### Pre-commit hook
+
+A forbidden-language check runs automatically before each commit. The hook
+(`scripts/pre-commit-check.mjs`) scans staged files for the 13 hard-banned
+phrases and contextual rules defined in `test/forbidden-language.test.mjs`,
+failing the commit with the file name, line number, and matched phrase — the
+same surface CI emits. It is activated automatically when you run `npm install`
+(the `prepare` script runs `git config core.hooksPath .husky`), so no manual
+setup is needed for new contributors.
+
 ### Soak runner
 
 Before tagging a GA release (per `notes/RELEASE-READINESS-v0.2.0.md §5`),
