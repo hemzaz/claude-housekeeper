@@ -52,7 +52,8 @@ const VALID_COMMANDS = new Set([
   "verify",
   "harden",
   "rollback",
-  "learn"
+  "learn",
+  "prune"
 ]);
 
 const LEARN_OP_ID_PATTERN = /^op_[0-9]{14}_[0-9a-f]{8}$/;
@@ -75,6 +76,9 @@ Commands:
                         --json                    Machine-readable JSON output.
                         --prune --older-than=<n>  Remove records older than N days.
                         --mark-false-positive <id> Increment false-positive counter.
+  prune               Audit-only plugin usage scan (v0.4.0; mutation in v0.4.1).
+                        --json                    Machine-readable JSON output.
+                        --safe                    Safe posture (skip shell-history scan).
 
 Options:
   --json              Print the machine-readable report (stable schema 0.1).
@@ -1170,6 +1174,134 @@ async function runLearn(options) {
   process.exitCode = 0;
 }
 
+// ---------------------------------------------------------------------------
+// runPrune — T-301 (audit-only in v0.4.0)
+// ---------------------------------------------------------------------------
+
+function runPrune(options) {
+  // T-301: reject any mutation flags immediately (exit 2).
+  // --confirm, --yes, --target are all mutation signals in prune context.
+  if (options.confirm || options.yes) {
+    const msg = [
+      "HOUSEKEEPER PRUNE",
+      "REFUSED",
+      "  reason:  prune-mutation-not-in-v0.4.0",
+      "  message: housekeeper prune --confirm is not available in v0.4.0.",
+      "           Plugin removal ships in v0.4.1.",
+      "  nextStep: Use this audit to identify candidates for removal. When v0.4.1",
+      "            is available, re-run housekeeper prune --confirm --yes to remove",
+      "            the listed plugins under snapshot protection."
+    ].join("\n");
+    console.log(msg);
+    process.exitCode = 2;
+    return;
+  }
+
+  const mode = pickMode(options);
+  const report = assembleReport(options.home, {
+    scope: "plugins",
+    configPath: options.configPath,
+    mode,
+    scanLimits: options.scanLimits
+  });
+
+  const pruneFindings = report.findings.filter((f) => f.id === "plugin.unused_past_grace");
+
+  if (options.json) {
+    printJson({
+      schemaVersion: report.schemaVersion,
+      generatedAt: report.generatedAt,
+      mode: report.mode,
+      home: report.home,
+      findings: pruneFindings
+    });
+    process.exitCode = 0;
+    return;
+  }
+
+  // Human-readable table per product memo §5 Transcript C
+  const lines = [];
+  lines.push("HOUSEKEEPER PRUNE (audit only — v0.4.0 does not remove plugins)");
+  lines.push("");
+  lines.push("Scanning installed plugins against grace window and activity records...");
+  lines.push("");
+
+  if (pruneFindings.length === 0) {
+    lines.push("No plugins past the grace window with no recorded activity.");
+  } else {
+    lines.push("PLUGINS PAST GRACE WINDOW WITH NO RECORDED ACTIVITY");
+    lines.push("");
+    const col = (s, w) => String(s || "").padEnd(w);
+    lines.push("  " + col("NAME", 24) + " " + col("INSTALLED", 16) + " " + col("LAST ACTIVE", 16) + " GRACE");
+
+    for (const f of pruneFindings) {
+      // Extract installed-at from evidence.freshness or approximate from summary
+      const installedStr = extractInstalledDate(f);
+      const lastActiveStr = "never";
+      const graceStr = extractGrace(f);
+      const pluginName = extractPluginName(f);
+
+      lines.push("  " + col(pluginName, 24) + " " + col(installedStr, 16) + " " + col(lastActiveStr, 16) + " " + graceStr);
+
+      // T-303: if historyAvailable is false, add note
+      if (f.historyAvailable === false) {
+        lines.push("    note: shell history not readable — activity check incomplete");
+        lines.push("          (historyAvailable: false). The plugin appears inactive based on");
+        lines.push("          learning records, but shell usage could not be confirmed.");
+        lines.push("    nextStep: If you use this plugin from the shell, confirm before treating");
+        lines.push("              it as a candidate for removal. Removal will be available in");
+        lines.push("              housekeeper prune v0.4.1.");
+      }
+    }
+  }
+
+  lines.push("");
+  lines.push("SUMMARY");
+  lines.push(`  ${pruneFindings.length} plugin${pruneFindings.length === 1 ? "" : "s"} past grace window with no recorded activity`);
+  lines.push("");
+  lines.push("No plugins were removed. This command is audit-only in v0.4.0.");
+  lines.push("Plugin removal will be available in housekeeper prune v0.4.1.");
+
+  console.log(lines.join("\n"));
+  process.exitCode = 0;
+}
+
+function extractPluginName(finding) {
+  // Derive a short display name from the targetPath or summary
+  const tp = finding.targetPath || "";
+  const parts = tp.split(/[/\\]/);
+  // install path is typically: .../cache/<market>/<name>/<version>
+  // name is at index -2 from end
+  if (parts.length >= 2) {
+    const version = parts[parts.length - 1];
+    const name = parts[parts.length - 2];
+    // If version looks like semver or numeric, use name; otherwise use last segment
+    if (/^\d/.test(version) || version.startsWith("v")) return name;
+    return name;
+  }
+  return tp;
+}
+
+function extractInstalledDate(finding) {
+  // The summary contains "installed approximately N days ago"
+  const match = (finding.summary || "").match(/(\d+) days/);
+  if (match) {
+    const daysAgo = parseInt(match[1], 10);
+    const d = new Date(Date.now() - daysAgo * 24 * 60 * 60 * 1000);
+    return d.toISOString().slice(0, 10);
+  }
+  return "unknown";
+}
+
+function extractGrace(finding) {
+  const freshness = finding.evidence?.freshness || [];
+  for (const s of freshness) {
+    const m = s.match(/grace window: (\d+)d/);
+    if (m) return `${m[1]} days`;
+  }
+  return "30 days";
+}
+
 function printVerify(probes) {
   for (const probe of probes) {
     if (probe.skipped) {
@@ -1211,6 +1343,7 @@ try {
     if (!existsSync(options.home)) {
       fail(`Claude home does not exist: ${options.home}`, 2);
     } else if (options.command === "learn") await runLearn(options);
+    else if (options.command === "prune") runPrune(options);
     else if (options.command === "diagnose") runDiagnose(options);
     else if (options.command === "plan") runPlan(options);
     else if (options.command === "clean") await runClean(options);
