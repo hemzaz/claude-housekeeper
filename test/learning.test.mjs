@@ -8,7 +8,9 @@ import {
   appendApplied,
   appendRefusal,
   appendRollback,
-  readSummary
+  readSummary,
+  pruneLearningFiles,
+  markFalsePositive
 } from "../scripts/lib/learning.mjs";
 
 // ---------------------------------------------------------------------------
@@ -397,4 +399,68 @@ test("readSummary echoes windowDays in result", async () => {
   const home = makeHome();
   const summary = await readSummary(home, { windowDays: 14 });
   assert.equal(summary.windowDays, 14);
+});
+
+// ---------------------------------------------------------------------------
+// 16. pruneLearningFiles — removes records older than cutoff
+// ---------------------------------------------------------------------------
+
+test("pruneLearningFiles removes old records and keeps recent ones", async () => {
+  const home = makeHome();
+
+  const old = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+  const recent = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString();
+
+  // Write one old + one recent refusal
+  const dir = learningDir(home);
+  mkdirSync(dir, { recursive: true });
+  const oldLine = JSON.stringify({ learnSchemaVersion: "0.4", ts: old, command: "clean", target: "x", reason: "old", refusalClass: "policy" });
+  const newLine = JSON.stringify({ learnSchemaVersion: "0.4", ts: recent, command: "clean", target: "x", reason: "recent", refusalClass: "policy" });
+  writeFileSync(refusalsFile(home), oldLine + "\n" + newLine + "\n");
+
+  await pruneLearningFiles(home, 7); // prune records older than 7 days
+
+  const remaining = readJsonlLines(refusalsFile(home));
+  assert.equal(remaining.length, 1, "only the recent record should remain");
+  assert.equal(remaining[0].reason, "recent");
+});
+
+test("pruneLearningFiles with all records in window leaves file unchanged", async () => {
+  const home = makeHome();
+  const dir = learningDir(home);
+  mkdirSync(dir, { recursive: true });
+
+  const recent = new Date(Date.now() - 1 * 24 * 60 * 60 * 1000).toISOString();
+  const line = JSON.stringify({ learnSchemaVersion: "0.4", ts: recent, command: "clean", target: "x", reason: "r", refusalClass: "policy" });
+  writeFileSync(refusalsFile(home), line + "\n");
+
+  await pruneLearningFiles(home, 7);
+
+  const remaining = readJsonlLines(refusalsFile(home));
+  assert.equal(remaining.length, 1, "record within window must not be pruned");
+});
+
+// ---------------------------------------------------------------------------
+// 17. markFalsePositive — increments state.json counter
+// ---------------------------------------------------------------------------
+
+test("markFalsePositive creates state.json and sets falsePositives to 1", async () => {
+  const home = makeHome();
+  await markFalsePositive(home, "op_20260501000000_aabbccdd");
+
+  const state = JSON.parse(readFileSync(stateFile(home), "utf8"));
+  assert.equal(state.falsePositives, 1);
+  assert.equal(state.learnSchemaVersion, LEARNING_SCHEMA_VERSION);
+});
+
+test("markFalsePositive increments an existing counter", async () => {
+  const home = makeHome();
+  const dir = learningDir(home);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(stateFile(home), JSON.stringify({ learnSchemaVersion: "0.4", falsePositives: 5 }) + "\n");
+
+  await markFalsePositive(home, "op_20260501000000_aabbccdd");
+
+  const state = JSON.parse(readFileSync(stateFile(home), "utf8"));
+  assert.equal(state.falsePositives, 6);
 });
