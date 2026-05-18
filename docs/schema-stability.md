@@ -258,3 +258,86 @@ manifest `files[]` entry with the standard `sha256Before` /
 is required; `schemaVersion` stays at `"0.2"`. The `command` field
 takes the value `"harden"` (already enumerated as a stable command
 value above).
+
+---
+
+## v0.4 Addenda (T-700)
+
+All surfaces in this section are additive minor additions. No
+`schemaVersion` bump is required for any of them. Readers MUST
+tolerate unknown fields per the change rules above.
+
+### New optional Finding field: `falsePositiveSeenBefore`
+
+Already present in the stable fields table above (added in the T-105
+commit). Recorded here for cross-reference:
+
+| Field | Class | Rule |
+| --- | --- | --- |
+| `findings[].falsePositiveSeenBefore` | stable, nullable | count of prior false-positive markers for this detector + targetPath pair; absent (not zero) when no markers exist; additive, no schemaVersion bump |
+
+### New finding ids (additive)
+
+Two new detector ids join the stable set in v0.4. Adding a detector id
+is additive per [versioning-policy.md §1.1](./versioning-policy.md#11-detector-ids).
+
+| Id | Added in | Description |
+| --- | --- | --- |
+| `plugin.unused_past_grace` | v0.4 | Plugin cache has not been applied within the grace window; emits at `inform` stance (audit-only in v0.4.0) |
+| `settings.jsonc_detected` | v0.3 | `settings.json` contains JSONC comments; rewrite refused until comments are removed (see §8.3 of threat model) |
+
+`settings.jsonc_detected` was introduced in v0.3 as the refusal class
+`settings-jsonc-detected`. The detector-id form `settings.jsonc_detected`
+is the v0.4 canonical name; both strings appear in the codebase and are
+stable.
+
+### New on-disk surfaces (v0.4)
+
+v0.4 introduces two new on-disk paths under
+`<home>/.claude/housekeeper/`. Both are append-only and local-only.
+Neither requires a `schemaVersion` bump.
+
+#### `learning/` directory
+
+| Path | Format | Description |
+| --- | --- | --- |
+| `<home>/.claude/housekeeper/learning/refusals.jsonl` | JSONL | One JSON line per refusal emitted by `composeCleanPlan` or `composeHardenPlan`; appended via O_APPEND |
+| `<home>/.claude/housekeeper/learning/applied.jsonl` | JSONL | One JSON line per successful mutation applied by `executeCleanPlan` or `executeHardenPlan` |
+| `<home>/.claude/housekeeper/learning/rollbacks.jsonl` | JSONL | One JSON line per rollback executed by `executeRollbackPlan` |
+| `<home>/.claude/housekeeper/learning/state.json` | JSON | Mutable summary state; contains `learnSchemaVersion: "0.4"` on every write |
+
+The `learnSchemaVersion: "0.4"` field is written on every state.json
+update (T-101). It is stable within v0.4.x: renaming or removing it
+requires a minor bump. Adding fields to state.json is additive.
+
+Each JSONL line carries the `learnSchemaVersion` field so readers can
+distinguish entries written by different tool versions without parsing
+the summary state.
+
+#### `lock.history` JSONL
+
+| Path | Format | Description |
+| --- | --- | --- |
+| `<home>/.claude/housekeeper/lock.history` | JSONL | Append-only log; one JSON line per lock acquire or release: `{ts, pid, action, holder, releaseReason?}` |
+
+Fields on each `lock.history` line:
+
+| Field | Class | Rule |
+| --- | --- | --- |
+| `ts` | stable | ISO 8601 UTC ms-precision timestamp |
+| `pid` | stable | process id of the Housekeeper invocation |
+| `action` | stable | `"acquire"` or `"release"` |
+| `holder` | stable | lock holder string (matches the lockfile content) |
+| `releaseReason` | stable, nullable | human-readable release reason; absent on `acquire` lines |
+
+### New mutation kind: `settings-rewrite` (already documented above)
+
+`settings-rewrite` was added in v0.3 and is documented in the
+"Documented mutation kinds" table above. No additional entry needed.
+
+### Reserved mutation kind: `json-rewrite`
+
+The kind identifier `json-rewrite` is reserved for Phase 4 (T-400).
+It is not yet materialised. When Phase 4 ships, this section will
+be updated with the full apply/rollback contract. Adding it is
+additive; no `schemaVersion` bump is required.

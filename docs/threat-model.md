@@ -416,3 +416,160 @@ If you operate Housekeeper outside the single-user-local assumption,
 the analysis here is not sufficient — settings-write defenses for
 multi-user / fleet / remote scenarios remain v0.4+ concerns, listed
 under the v0.3-candidates note in §4.
+
+---
+
+## 9. Learning loop (v0.4)
+
+v0.4 introduces the learning loop: `scripts/lib/learning.mjs` appends
+one JSON line per refusal, applied mutation, and rollback to JSONL
+files under `<home>/.claude/housekeeper/learning/`, and maintains a
+mutable summary in `learning/state.json`. The `learn` subcommand reads
+these files and the `--mark-false-positive` flag writes a marker into
+state.json. The `lock.history` JSONL (T-099a) records acquire/release
+events for the concurrency lockfile.
+
+### 9.1 Trust boundary (unchanged from v0.2)
+
+The trust boundary from §2 is unchanged. Learning files are
+local-only, written and read by the same uid that runs Housekeeper.
+There is no network surface, no daemon, and no multi-user access
+pattern. All learning surfaces are within the same single-user trust
+domain as the operation manifests and snapshot trees they complement.
+
+### 9.2 New surfaces
+
+| Path | Access pattern | Notes |
+| --- | --- | --- |
+| `<home>/.claude/housekeeper/learning/refusals.jsonl` | append-only write, sequential read | One line per refusal from `composeCleanPlan` / `composeHardenPlan` |
+| `<home>/.claude/housekeeper/learning/applied.jsonl` | append-only write, sequential read | One line per successful mutation |
+| `<home>/.claude/housekeeper/learning/rollbacks.jsonl` | append-only write, sequential read | One line per rollback executed |
+| `<home>/.claude/housekeeper/learning/state.json` | read-modify-write via atomic rename | Summary counters + false-positive markers; `learnSchemaVersion: "0.4"` on every write |
+| `<home>/.claude/housekeeper/lock.history` | append-only write | One line per lock acquire/release |
+
+### 9.3 Append-only atomicity
+
+JSONL files are opened with `O_APPEND`. On POSIX-conforming local
+filesystems (macOS APFS, Linux ext4), writes up to `PIPE_BUF` bytes
+(≥ 512 bytes; 65536 on Linux, 512 on macOS) are atomic at the kernel
+level: concurrent appenders cannot interleave partial lines within a
+single write call sized below the limit. Each learning record is a
+single JSON line well under `PIPE_BUF`, so the atomicity guarantee
+holds on supported local filesystems.
+
+**Network filesystem degradation:** NFS and SMB do not guarantee
+`O_APPEND` atomicity (client-side buffering may reorder or interleave
+appends from concurrent processes). The existing `looksLikeNetworkFs`
+check (introduced in §8.3 for `settings-rewrite`) is extended to
+cover learning file writes in v0.4 per
+`docs/design/v0.4-platform-memo.md §5`. If a network filesystem is
+detected, Housekeeper skips learning writes for that invocation and
+emits a `degraded` entry in the diagnose output rather than risking
+corrupt JSONL.
+
+`state.json` uses the same atomic rename protocol as `settings.json`
+(write-temp + `rename(2)` + fsync-parent), so it inherits the same
+guarantees and the same network-filesystem exclusion.
+
+### 9.4 Threats considered (learning-loop specific)
+
+#### T9a. Tampering with state.json to forge false-positive markers
+
+An attacker with write access to `<home>/.claude/housekeeper/learning/`
+could modify `state.json` to insert false-positive markers, causing
+the `diagnose` output to suppress findings via
+`falsePositiveSeenBefore`. **Status:** out of scope. The same-uid
+attacker already owns the home and can corrupt any Housekeeper state
+directly. The trust-boundary argument from §4 applies unchanged:
+HMAC on state.json would not raise the bar against a same-uid
+attacker.
+
+#### T9b. PII leakage in refusals.jsonl
+
+Refusal records include `targetPath` values, which are absolute paths
+under the user's home. These paths may contain the username and
+directory names that a user considers private. **Mitigation:** the
+`--redact` flag collapses home paths to `~` in all output, including
+learning file entries, per the redaction posture documented in
+`scripts/lib/redact.mjs`. Users who share learning files (e.g., for
+support) should use `--redact`.
+
+### 9.5 Acknowledged residuals
+
+- **HMAC on learning files:** deferred per the same G13 trade-off
+  recorded in §4. The single-user trust domain makes HMAC on
+  learning files provide no additional protection against a same-uid
+  attacker.
+- **JSONL corruption recovery:** if a learning file is truncated
+  mid-line by a crash, `readSummary` skips the malformed trailing
+  line and logs the skip. No repair is attempted automatically.
+
+---
+
+## 10. MCP command rewrite (v0.4)
+
+v0.4 adds `harden --mcp-command-rewrite=<old>=<new>`, which reads the
+current `mcpServers` table from `<home>/.claude/settings.json`, finds
+the entry whose `command` field matches `<old>`, and writes a
+`settings-rewrite` mutation that replaces it with `<new>`. The
+`<new>` value is a filesystem path supplied by the user.
+
+### 10.1 Surface
+
+The `--mcp-command-rewrite=<old>=<new>` flag extends the existing
+`harden` command (§8). It is gated behind the same
+`--confirm --yes` requirement. `--safe` mode does not run `harden` at
+all (existing rule), so the MCP rewrite surface only opens when the
+user explicitly opts in.
+
+The resulting mutation is a `settings-rewrite` operation (§8) with
+the MCP `command` field patched in memory before the atomic rename.
+All §8 guarantees — atomic rename, JSONC refusal, network-filesystem
+refusal, snapshot + rollback — apply unchanged.
+
+### 10.2 Threats considered (MCP rewrite specific)
+
+#### T10a. PATH-shadowing — user-supplied path under attacker write control
+
+A user could supply a `<new>` path that points to a location the
+user's own account can write to, then later replace the target binary
+with a malicious one. When Claude next invokes the MCP server, it
+would execute the attacker-controlled binary.
+
+**Mitigation:** Two refusal classes guard against the common cases:
+
+- `mcp-rewrite-target-missing` — refuses if `<new>` does not exist at
+  plan-composition time. The user cannot rewrite to a path that
+  hasn't been created yet.
+- `mcp-rewrite-target-not-executable` — refuses if `<new>` exists but
+  is not executable by the running uid. This eliminates the class of
+  attacks where a non-executable placeholder is written first.
+
+**Residual risk:** A path that exists and is executable at
+plan-composition time could be replaced between `composeHardenPlan`
+and `executeHardenPlan`. The TOCTOU window is bounded to milliseconds
+(same argument as T7 in §3). A user who controls both the Housekeeper
+invocation and the target path already owns the home.
+
+#### T10b. Foreign-owner — supplied path owned by another uid
+
+A user could supply a `<new>` path whose inode is owned by a
+different uid (e.g. a system binary, a shared library directory).
+Claude would then invoke a binary not under the user's exclusive
+control, which is a wider attack surface than before the rewrite.
+
+**Status:** mitigation deferred to v0.4.x. The refusal class
+`mcp-rewrite-foreign-owner` is **not yet implemented**. The v0.4.0
+release does not check the owner uid of `<new>`. This is recorded
+as a known residual per architect memo
+`docs/design/v0.4-architect-memo.md §3.4`. The T10b refusal class
+will be added in a v0.4.x patch once the uid-check helper is
+validated across macOS and Linux.
+
+### 10.3 Trust boundary unchanged
+
+The v0.4 MCP rewrite surface does not change the §2 trust boundary.
+Housekeeper still runs as the home owner, with no remote surface and
+no multi-user defense. The `<new>` path is supplied by the user
+interactively; Housekeeper does not fetch remote paths or resolve
+redirects.
