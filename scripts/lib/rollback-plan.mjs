@@ -4,7 +4,7 @@
 // and execute the restore while preserving the Housekeeper lock invariant.
 
 import { existsSync } from "node:fs";
-import { copyFile, mkdir, readFile, rm } from "node:fs/promises";
+import { copyFile, mkdir, readFile, readdir, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { atomicWrite, hashFile } from "./snapshot.mjs";
 import { acquireLock, releaseLock, LockHeldError } from "./lock.mjs";
@@ -140,14 +140,29 @@ const ROLLBACK_REGISTRY = Object.freeze({
 });
 
 /**
- * composeRollbackPlan(home, opId) — read a Housekeeper operation manifest and
- * return a dry-run rollback plan.
+ * composeRollbackPlan(home, opIdOrOptions) — read a Housekeeper operation
+ * manifest and return a dry-run rollback plan.
+ *
+ * Accepts two call forms:
+ *   composeRollbackPlan(home, "op_<id>")         — single-op rollback (v0.3)
+ *   composeRollbackPlan(home, { streamId })       — stream rollback (v0.4 P6)
+ *
+ * For the stream form, returns:
+ *   { isStream: true, streamId, subPlans: [...], composedAt }
+ * where subPlans are per-chunk rollback plans in reverse chunk order.
  *
  * `home` is the Claude home directory (`~/.claude`), matching the CLI and
  * audit module convention. Manifests live at:
- *   <home>/housekeeper/operations/<opId>.json
+ *   <home>/housekeeper/operations/<opId>.json           (single-op)
+ *   <home>/housekeeper/operations/<streamId>/parent.json (stream)
  */
-export async function composeRollbackPlan(home, opId) {
+export async function composeRollbackPlan(home, opIdOrOptions) {
+  // Stream rollback: accept { streamId } options object.
+  if (opIdOrOptions && typeof opIdOrOptions === "object" && opIdOrOptions.streamId) {
+    return _composeStreamRollbackPlan(home, opIdOrOptions.streamId);
+  }
+
+  const opId = opIdOrOptions;
   const sourceManifestPath = join(home, "housekeeper", "operations", `${opId}.json`);
 
   if (!existsSync(sourceManifestPath)) {
@@ -312,6 +327,129 @@ export async function executeRollbackPlan(plan, home) {
   } finally {
     await releaseLock(lockHandle, "rolled_back");
   }
+}
+
+// ── Stream rollback (T-603, T-605) ────────────────────────────────────────────
+//
+// Per docs/design/v0.4-architect-memo.md §7.5: rolling back a stream rolls back
+// all completed sub-manifests in REVERSE chunk order. The halted chunk (if any,
+// status "applied" with partialApply: true) is rolled back FIRST, then
+// completed chunks in descending chunkIndex order.
+
+/**
+ * _composeStreamRollbackPlan(home, streamId) — internal helper. Reads the
+ * stream parent.json, locates all sub-manifests under operations/stream_<id>/,
+ * and returns a composite stream rollback plan:
+ *
+ *   {
+ *     isStream: true,
+ *     streamId,
+ *     subPlans: [...],   // per-chunk rollback plans, reverse-ordered
+ *     refused: [],
+ *     composedAt: ISO
+ *   }
+ */
+async function _composeStreamRollbackPlan(home, streamId) {
+  const streamDir = join(home, "housekeeper", "operations", streamId);
+  const parentPath = join(streamDir, "parent.json");
+  const composedAt = new Date().toISOString();
+
+  const makeStreamRefusal = (reason, message) => ({
+    isStream: true,
+    streamId,
+    subPlans: [],
+    refused: [{ class: "RollbackPlanRefusal", reason, message, exitCode: 2 }],
+    composedAt
+  });
+
+  if (!existsSync(parentPath)) {
+    return makeStreamRefusal(
+      "stream-manifest-not-found",
+      `No stream parent manifest found for ${streamId}.`
+    );
+  }
+
+  let parent;
+  try {
+    parent = JSON.parse(await readFile(parentPath, "utf8"));
+  } catch {
+    return makeStreamRefusal(
+      "stream-manifest-malformed",
+      `Stream parent manifest ${parentPath} is not valid JSON.`
+    );
+  }
+
+  // Discover all chunk_NNN.json files in the stream directory.
+  let dirEntries;
+  try {
+    dirEntries = await readdir(streamDir);
+  } catch {
+    return makeStreamRefusal(
+      "stream-manifest-not-found",
+      `Stream directory ${streamDir} could not be read.`
+    );
+  }
+
+  // Parse chunk manifests and determine their chunkIndex from filename.
+  const chunkManifests = [];
+  for (const name of dirEntries) {
+    if (!name.startsWith("chunk_") || !name.endsWith(".json")) continue;
+    // The chunk opId stored in the manifest's "id" field is used by composeRollbackPlan.
+    const chunkManifestPath = join(streamDir, name);
+    let chunkMeta;
+    try {
+      chunkMeta = JSON.parse(await readFile(chunkManifestPath, "utf8"));
+    } catch {
+      continue; // skip unreadable chunk manifests
+    }
+    // Only include chunks that are rollbackable (applied or verified, not terminal).
+    const ROLLBACKABLE = new Set(["applied", "verified", "snapshot_taken"]);
+    if (!ROLLBACKABLE.has(chunkMeta.status)) continue;
+
+    // Extract chunkIndex from the filename: chunk_000.json → 0.
+    const indexStr = name.slice("chunk_".length, -".json".length);
+    const chunkIndex = parseInt(indexStr, 10);
+    if (!Number.isFinite(chunkIndex)) continue;
+
+    chunkManifests.push({ chunkIndex, opId: chunkMeta.id, status: chunkMeta.status, partialApply: Boolean(chunkMeta.partialApply) });
+  }
+
+  if (chunkManifests.length === 0) {
+    return makeStreamRefusal(
+      "stream-no-rollbackable-chunks",
+      `No rollbackable chunk manifests found for stream ${streamId}.`
+    );
+  }
+
+  // Sort by chunkIndex DESCENDING — completed chunks in reverse order.
+  // The halted chunk (partialApply: true) is first if present.
+  chunkManifests.sort((a, b) => {
+    // Halted chunk first (partialApply), then descending chunkIndex.
+    if (a.partialApply && !b.partialApply) return -1;
+    if (!a.partialApply && b.partialApply) return 1;
+    return b.chunkIndex - a.chunkIndex;
+  });
+
+  // Compose per-chunk rollback plans using the standard single-op path.
+  // Each chunk's opId is the key into the flat operations/ manifest directory
+  // (snapshot.mjs writes to operations/<opId>.json).
+  const subPlans = [];
+  for (const { chunkIndex, opId } of chunkManifests) {
+    // composeRollbackPlan (single-op form) for each chunk's opId.
+    // The chunk manifests are flat op_*.json files in operations/ (not stream/).
+    // We call the internal single-op path by passing the opId string.
+    const subPlan = await composeRollbackPlan(home, opId);
+    subPlans.push({ ...subPlan, chunkIndex });
+  }
+
+  return {
+    isStream: true,
+    streamId,
+    subPlans,
+    refused: [],
+    composedAt,
+    parent
+  };
 }
 
 /**

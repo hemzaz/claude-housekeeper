@@ -9,8 +9,8 @@
 //
 // Per docs/design/clean-design.md §7 step 3 (T-704).
 
-import { createHash } from "node:crypto";
-import { rm, lstat, readFile, readdir, stat } from "node:fs/promises";
+import { createHash, randomBytes } from "node:crypto";
+import { rm, lstat, readFile, readdir, stat, mkdir, writeFile } from "node:fs/promises";
 import { existsSync, unlinkSync } from "node:fs";
 import { join, basename, dirname } from "node:path";
 import { assembleReport } from "./audit.mjs";
@@ -26,9 +26,18 @@ import { loadConfig, pathMatchesProtection } from "./policy.mjs";
 import { acquireLock, releaseLock, LockHeldError, LOCK_STALE_WINDOW_MS } from "./lock.mjs";
 import { appendRefusal, appendApplied } from "./learning.mjs";
 
-// suppress unused-import warning for budget constants used in JSDoc
+// void budget constants so the linter does not say "not referenced"; used in JSDoc
 void MAX_OPERATION_FILES;
 void MAX_OPERATION_BYTES;
+
+// ── Stream constants (T-601..T-605, Q5 ruling: fixed 50 per chunk) ───────────
+
+/**
+ * STREAM_CHUNK_SIZE — fixed 50-item chunk size per Q5 ruling.
+ * Matches MAX_OPERATION_FILES so each chunk maps to exactly one snapshot
+ * budget. Exported for tests and CLI parser validation.
+ */
+export const STREAM_CHUNK_SIZE = MAX_OPERATION_FILES; // 50
 
 // ── Enums ─────────────────────────────────────────────────────────────────────
 
@@ -380,7 +389,11 @@ const NEXT_STEP_BY_REASON = Object.freeze({
   "settings-rewrite-not-batchable":
     "Run `claude-housekeeper harden` for settings-rewrite findings; v0.3 batch only covers dir-rmtree and file-unlink ops.",
   "batch-pair-cap-exceeded":
-    "Reduce pair count or raise --batch=N (max 50 per design)."
+    "Reduce pair count or raise --batch=N (max 50 per design).",
+  "stream-chunk-budget-exceeded":
+    "Use --stream only when --batch=N is greater than 50. For 50 or fewer pairs, omit --stream and use the standard batch path.",
+  "stream-resume-not-supported":
+    "Resuming a halted stream is not supported in v0.4. Roll back the completed chunks with `claude-housekeeper rollback --stream=<streamId>` and restart the full operation."
 });
 
 function nextStepFor(reason) {
@@ -973,6 +986,10 @@ export async function composeBatchCleanPlan(home, options = {}) {
     ? Math.min(options.batchCap, BATCH_MAX_PAIRS)
     : BATCH_DEFAULT_CAP;
   const allowedExecutionClasses = options.allowedExecutionClasses;
+  // skipAggregateBudget: set by composeStreamCleanPlan since stream chunks are
+  // already size-bounded at STREAM_CHUNK_SIZE pairs; snapshot.mjs enforces the
+  // per-snapshot file/byte budget independently.
+  const skipAggregateBudget = Boolean(options.skipAggregateBudget);
 
   // C19: pair-count cap. Fires before any per-pair compose so we don't pay
   // assembleReport N times for a doomed batch.
@@ -1054,8 +1071,9 @@ export async function composeBatchCleanPlan(home, options = {}) {
     totalBytes += op.estimatedBytes || 0;
   }
   if (
-    totalFiles > BATCH_AGGREGATE_FILE_LIMIT
-    || totalBytes > BATCH_AGGREGATE_BYTE_LIMIT
+    !skipAggregateBudget
+    && (totalFiles > BATCH_AGGREGATE_FILE_LIMIT
+    || totalBytes > BATCH_AGGREGATE_BYTE_LIMIT)
   ) {
     // Convert to refusal-set (mirrors per-pair pattern); empty operations.
     try {
@@ -1221,4 +1239,348 @@ export async function executeBatchCleanPlan(plan, home) {
   } finally {
     await releaseLock(lockHandle, "verified");
   }
+}
+
+// ── Stream compose + execute (T-601..T-605, Q5 ruling: fixed 50 per chunk) ───
+//
+// Per docs/design/v0.4-design.md §2 Q5 and v0.4-architect-memo.md §7.
+// Fixed 50-item chunks. Each chunk is an independent composeBatchCleanPlan call
+// that returns a plan executable by executeBatchCleanPlan. The chunks share
+// one streamId; sub-manifests live under operations/stream_<id>/.
+//
+// On per-chunk failure: halt (Q3 ruling holds), write parent.json with
+// streamPartial: true. No auto-rollback.
+
+/**
+ * generateStreamId() — stream_<YYYYMMDDHHMMSS>_<8hex>
+ * Mirrors generateOpId() shape from snapshot.mjs for consistency.
+ */
+function generateStreamId() {
+  const now = new Date();
+  const pad = (n, w) => String(n).padStart(w, "0");
+  const ts =
+    pad(now.getUTCFullYear(), 4) +
+    pad(now.getUTCMonth() + 1, 2) +
+    pad(now.getUTCDate(), 2) +
+    pad(now.getUTCHours(), 2) +
+    pad(now.getUTCMinutes(), 2) +
+    pad(now.getUTCSeconds(), 2);
+  const hex = randomBytes(4).toString("hex");
+  return `stream_${ts}_${hex}`;
+}
+
+/**
+ * composeStreamCleanPlan(home, options) — async generator. Yields one
+ * chunk object per STREAM_CHUNK_SIZE pairs:
+ *
+ *   { streamId, chunkIndex, totalChunks, plan }
+ *
+ * If options.resumeStreamId is provided, yields a single refusal item:
+ *   { refused: [{ reason: "stream-resume-not-supported", ... }] }
+ *
+ * Per Q5 ruling: fixed 50-item chunks (STREAM_CHUNK_SIZE).
+ */
+export async function* composeStreamCleanPlan(home, options = {}) {
+  const pairs = Array.isArray(options.pairs) ? options.pairs : [];
+  const allowedExecutionClasses = options.allowedExecutionClasses;
+
+  // stream-resume-not-supported — v0.5 territory.
+  if (options.resumeStreamId) {
+    yield {
+      refused: [
+        {
+          class: "CleanPlanRefusal",
+          reason: "stream-resume-not-supported",
+          targetPath: "",
+          detectorId: "",
+          message: "Resuming a halted stream is not supported in v0.4. Use rollback to restore completed chunks.",
+          nextStep: nextStepFor("stream-resume-not-supported"),
+          exitCode: 2
+        }
+      ]
+    };
+    return;
+  }
+
+  const streamId = generateStreamId();
+  const totalChunks = Math.ceil(pairs.length / STREAM_CHUNK_SIZE) || 1;
+
+  for (let offset = 0; offset < pairs.length; offset += STREAM_CHUNK_SIZE) {
+    const chunk = pairs.slice(offset, offset + STREAM_CHUNK_SIZE);
+    const chunkIndex = offset / STREAM_CHUNK_SIZE;
+
+    // Defensive: per-chunk budget check. Should not trigger under fixed-50, but
+    // guards against callers that modify STREAM_CHUNK_SIZE or supply oversized chunks.
+    if (chunk.length > MAX_OPERATION_FILES) {
+      yield {
+        streamId,
+        chunkIndex,
+        totalChunks,
+        refused: [
+          {
+            class: "CleanPlanRefusal",
+            reason: "stream-chunk-budget-exceeded",
+            targetPath: "",
+            detectorId: "",
+            message: `Chunk ${chunkIndex} has ${chunk.length} pairs; maximum is ${MAX_OPERATION_FILES} per Q5 ruling.`,
+            nextStep: nextStepFor("stream-chunk-budget-exceeded"),
+            exitCode: 2
+          }
+        ]
+      };
+      return;
+    }
+
+    const plan = await composeBatchCleanPlan(home, {
+      pairs: chunk,
+      batchCap: chunk.length,
+      allowedExecutionClasses,
+      skipAggregateBudget: true
+    });
+
+    yield { streamId, chunkIndex, totalChunks, plan };
+  }
+}
+
+/**
+ * executeStreamCleanPlan(home, options) — executes all chunks yielded by
+ * composeStreamCleanPlan. Acquires the lock ONCE for the entire stream,
+ * releases it in finally.
+ *
+ * Returns:
+ *   {
+ *     streamId,
+ *     chunks: [{ chunkIndex, manifest }],
+ *     streamPartial: boolean,
+ *     haltedAtChunk: number | null
+ *   }
+ *
+ * On per-chunk failure (empty ops, partialApply, refusals-only): sets
+ * streamPartial: true, records haltedAtChunk, writes parent.json, and
+ * returns immediately. No auto-rollback per Q3.
+ *
+ * Writes parent.json under operations/stream_<id>/ tracking progress.
+ */
+export async function executeStreamCleanPlan(home, options = {}) {
+  const pairs = Array.isArray(options.pairs) ? options.pairs : [];
+  const allowedExecutionClasses = options.allowedExecutionClasses;
+  const snapshotHome = dirname(home);
+
+  // The lock is held for the entire stream to prevent concurrent mutations.
+  const lockHandle = await acquireLock(home);
+
+  // Generate the streamId and compute totalChunks up front for parent.json.
+  const streamId = generateStreamId();
+  const totalChunks = Math.ceil(pairs.length / STREAM_CHUNK_SIZE) || 1;
+
+  // Prepare the operations dir for the stream sub-directory.
+  const streamDir = join(home, "housekeeper", "operations", streamId);
+  await mkdir(streamDir, { recursive: true });
+
+  // Parent manifest — written initially then updated on each chunk completion or halt.
+  const parentPath = join(streamDir, "parent.json");
+  const parentManifest = {
+    schemaVersion: "0.2",
+    kind: "stream-parent",
+    streamId,
+    createdAt: new Date().toISOString(),
+    command: "clean",
+    totalPairs: pairs.length,
+    chunkSize: STREAM_CHUNK_SIZE,
+    totalChunks,
+    completedChunks: [],
+    haltedAtChunk: null,
+    streamPartial: false,
+    status: "in_progress"
+  };
+
+  async function saveParent() {
+    await writeFile(parentPath, JSON.stringify(parentManifest, null, 2) + "\n");
+  }
+
+  await saveParent();
+
+  const chunkResults = [];
+  let streamPartial = false;
+  let haltedAtChunk = null;
+
+  try {
+    await gcSnapshots(snapshotHome);
+
+    for (let offset = 0; offset < pairs.length; offset += STREAM_CHUNK_SIZE) {
+      const chunk = pairs.slice(offset, offset + STREAM_CHUNK_SIZE);
+      const chunkIndex = offset / STREAM_CHUNK_SIZE;
+
+      // Compose the chunk plan.
+      const plan = await composeBatchCleanPlan(home, {
+        pairs: chunk,
+        batchCap: chunk.length,
+        allowedExecutionClasses,
+        skipAggregateBudget: true
+      });
+
+      // If the chunk has no executable operations (all refused or budget), treat
+      // as a halt — the stream cannot make progress.
+      if (plan.operations.length === 0) {
+        streamPartial = true;
+        haltedAtChunk = chunkIndex;
+        parentManifest.streamPartial = true;
+        parentManifest.haltedAtChunk = `chunk_${String(chunkIndex).padStart(3, "0")}`;
+        parentManifest.status = "halted";
+        await saveParent();
+        break;
+      }
+
+      // Execute the chunk using the existing batch executor. We pass the plan
+      // directly — it already has ops composed. The lock is already held so we
+      // bypass acquireLock inside executeBatchCleanPlan by calling the inner
+      // snapshot/apply/verify machinery directly.
+      //
+      // Since executeBatchCleanPlan acquires the lock internally and we already
+      // hold it, we inline the core logic here to avoid lock re-acquisition.
+      const manifest = await _executeBatchChunk(plan, home, snapshotHome, streamId, chunkIndex);
+      chunkResults.push({ chunkIndex, manifest });
+
+      // Write a chunk index file to the stream dir so _composeStreamRollbackPlan
+      // can discover chunk opIds for reverse-order rollback.
+      const chunkSlug = `chunk_${String(chunkIndex).padStart(3, "0")}`;
+      const chunkIndexPath = join(streamDir, `${chunkSlug}.json`);
+      await writeFile(chunkIndexPath, JSON.stringify({
+        id: manifest.id,
+        status: manifest.status,
+        chunkIndex,
+        partialApply: Boolean(manifest.partialApply)
+      }) + "\n");
+
+      if (manifest.partialApply) {
+        // Q3 ruling: halt on partial apply, no auto-rollback.
+        streamPartial = true;
+        haltedAtChunk = chunkIndex;
+        parentManifest.streamPartial = true;
+        parentManifest.haltedAtChunk = chunkSlug;
+        parentManifest.status = "halted";
+        await saveParent();
+        break;
+      }
+
+      // Chunk verified — record progress.
+      parentManifest.completedChunks.push(chunkSlug);
+      await saveParent();
+    }
+
+    if (!streamPartial) {
+      parentManifest.status = "verified";
+      await saveParent();
+    }
+
+    return {
+      streamId,
+      chunks: chunkResults,
+      streamPartial,
+      haltedAtChunk
+    };
+  } finally {
+    await releaseLock(lockHandle, "verified");
+  }
+}
+
+/**
+ * _executeBatchChunk(plan, home, snapshotHome, streamId, chunkIndex)
+ *
+ * Internal helper — executes one pre-composed batch plan without acquiring the
+ * lock (caller already holds it). Mirrors executeBatchCleanPlan's core loop
+ * but skips lock acquisition and gcSnapshots (called once per stream).
+ *
+ * Returns the final manifest (status "verified" on full success, "applied" +
+ * partialApply: true on partial failure).
+ */
+async function _executeBatchChunk(plan, home, snapshotHome, _streamId, _chunkIndex) {
+  // Flatten every op's expandedFiles into one snapshot target list.
+  const targets = [];
+  const dispatchByIndex = [];
+  const dirLastIndex = new Map();
+
+  for (const op of plan.operations) {
+    const expanded = (op.expandedFiles && op.expandedFiles.length > 0)
+      ? op.expandedFiles
+      : [];
+    for (const f of expanded) {
+      targets.push(f);
+      if (op.mutationKind === "file-unlink") {
+        dispatchByIndex.push({ kind: "file-unlink" });
+      } else {
+        const dirPath = op.mutationOp?.args?.dirPath || op.targetPath;
+        dispatchByIndex.push({ kind: "dir-rmtree", dirPath });
+        dirLastIndex.set(dirPath, targets.length - 1);
+      }
+    }
+  }
+
+  if (targets.length === 0) {
+    return {
+      schemaVersion: "0.2",
+      id: "",
+      status: "verified",
+      partialApply: false,
+      files: []
+    };
+  }
+
+  const consentSummary = [
+    `clean --stream --confirm --yes — ${plan.operations.length} operation(s) in chunk`,
+    ...plan.operations.map((op) => `  ${op.mutationKind}  ${op.targetPath}  (${op.estimatedBytes}B)`)
+  ].join("\n");
+
+  const { opId } = await takeSnapshot(snapshotHome, {
+    targets,
+    command: "clean",
+    mode: "confirm",
+    consentSummary
+  });
+
+  const ops = targets.map((_, idx) => ({
+    apply: async (origPath) => {
+      const d = dispatchByIndex[idx];
+      await rm(origPath, { recursive: false, force: false });
+      if (d.kind === "dir-rmtree" && dirLastIndex.get(d.dirPath) === idx) {
+        try {
+          await rm(d.dirPath, { recursive: true, force: false });
+        } catch {
+          // Already gone or not yet empty.
+        }
+      }
+    }
+  }));
+
+  const applied = await applyOperation(opId, snapshotHome, ops);
+
+  if (applied.partialApply) {
+    try {
+      await appendApplied(home, {
+        opId: applied.id,
+        status: applied.status,
+        command: "clean",
+        targets: plan.operations.map((op) => op.targetPath),
+        filesCount: targets.length,
+        partialApply: true
+      });
+    } catch (err) {
+      process.stderr.write(`[clean-plan] appendApplied failed: ${err && err.message}\n`);
+    }
+    return applied;
+  }
+
+  const verified = await verify(opId, snapshotHome);
+  try {
+    await appendApplied(home, {
+      opId: verified.id,
+      status: verified.status,
+      command: "clean",
+      targets: plan.operations.map((op) => op.targetPath),
+      filesCount: targets.length
+    });
+  } catch (err) {
+    process.stderr.write(`[clean-plan] appendApplied failed: ${err && err.message}\n`);
+  }
+  return verified;
 }
