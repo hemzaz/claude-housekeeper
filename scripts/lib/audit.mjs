@@ -6,6 +6,7 @@
 // (per docs/schemas.md §1).
 
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { homedir } from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import {
@@ -31,6 +32,11 @@ import {
 export const PLUGIN_ORPHAN_GRACE_DAYS = 7;
 const PLUGIN_ORPHAN_GRACE_MS = PLUGIN_ORPHAN_GRACE_DAYS * 24 * 60 * 60 * 1000;
 
+// PLUGIN_PRUNE_GRACE_DAYS — default grace window for the plugin.unused_past_grace
+// detector (T-300). Per Q3 ruling (v0.4-design.md §2): 30 days, configurable
+// via pruneGraceDays in ~/.claude/housekeeper/config.json.
+export const PLUGIN_PRUNE_GRACE_DAYS = 30;
+
 const DEFAULT_SCOPE = "all";
 
 // v0.1 detector ids per notes/PLAN.md §3 Phase 2 detector remap table.
@@ -48,6 +54,7 @@ const SCOPE_TO_DETECTORS = {
     "plugin.cache_unreferenced",
     "plugin.duplicate_registration",
     "plugin.cache_size",
+    "plugin.unused_past_grace",
     "settings.hook_path_dangling",
     "settings.hook_command_shell_ambiguous"
   ],
@@ -130,6 +137,7 @@ export function assembleReport(home, options = {}) {
   pushAll(detectorOutputs, selected, detectPluginCacheReferencedByHook(context));
   pushAll(detectorOutputs, selected, detectPluginDuplicateRegistration(context));
   push(detectorOutputs, selected, detectPluginCacheSize(context));
+  pushAll(detectorOutputs, selected, detectPluginUnusedPastGrace(context));
 
   pushAll(detectorOutputs, selected, detectLocalSkillShadow(context));
   pushAll(detectorOutputs, selected, detectLocalCommandIdentical(context));
@@ -255,6 +263,7 @@ function buildFinding(raw, { home, mode, policyMatchesFor, falsePositiveMarkers 
   // compose-time refusals can still fire downstream.
   if (raw.hardenable === true) finding.hardenable = true;
   if (raw.cleanable === true) finding.cleanable = true;
+  if (raw.historyAvailable !== undefined) finding.historyAvailable = raw.historyAvailable;
 
   // T-105: decorate with falsePositiveSeenBefore: N when a matching marker exists.
   // Informational only — no stance or ranking change.
@@ -287,7 +296,8 @@ const SAFE_MODE_LIMIT_BY_ID = {
   "registry.broken_frontmatter": "safe-mode-no-loader-key",
   "home.scan_budget_hit": "safe-mode-scan-budget",
   "home.clean": "safe-mode-no-loader-key",
-  "plugin.cache_referenced_by_hook": "safe-mode-no-loader-key"
+  "plugin.cache_referenced_by_hook": "safe-mode-no-loader-key",
+  "plugin.unused_past_grace": "safe-mode-no-shell-history"
 };
 
 // Apply mode-driven surface.limits per docs/schemas.md and the fixture
@@ -1303,6 +1313,9 @@ function loadContext(home, options) {
     maxWallMs: DEFAULT_MAX_WALL_MS
   };
   const falsePositiveMarkers = loadFalsePositiveMarkers(home);
+  // T-300: historyFile override for tests; in production defaults to env var
+  // or well-known shell history files (resolved at detector call time).
+  const historyFile = options.historyFile || null;
 
   // T-402: bounded walk of <home>/projects/. Records degraded entries when
   // any budget is hit. Detector reads `projectsScan` to emit the orientation
@@ -1326,6 +1339,10 @@ function loadContext(home, options) {
     });
   }
 
+  // T-300: load applied.jsonl for learning-activity signal.
+  // Synchronous read (audit.mjs is fully synchronous); tolerate missing file.
+  const appliedEntries = loadAppliedEntries(home);
+
   return {
     home,
     installed,
@@ -1341,8 +1358,161 @@ function loadContext(home, options) {
     operationsDir,
     degraded,
     falsePositiveMarkers,
+    appliedEntries,
+    historyFile,
     now: Date.now()
   };
+}
+
+// T-300: load applied.jsonl synchronously for the learning-activity signal.
+// Returns an array of parsed records; tolerates missing or malformed file.
+function loadAppliedEntries(home) {
+  const file = path.join(home, "housekeeper", "learning", "applied.jsonl");
+  if (!existsSync(file)) return [];
+  let raw;
+  try { raw = readFileSync(file, "utf8"); } catch { return []; }
+  const records = [];
+  for (const line of raw.split("\n")) {
+    const t = line.trim();
+    if (!t) continue;
+    try { records.push(JSON.parse(t)); } catch { /* skip malformed */ }
+  }
+  return records;
+}
+
+// T-300: scan shell history files for substring presence of a plugin key.
+// Returns the count of matching lines, or -1 if history was unavailable.
+// In safe mode (mode === "safe") always returns -1 (skip the scan).
+// Override file: options.historyFile (for tests) or HOUSEKEEPER_HISTORY_FILE env var.
+// Fallback: ~/.zsh_history, ~/.bash_history.
+function scanShellHistory(pluginKey, context) {
+  if (context.mode === "safe") return -1;
+
+  // Determine candidate files
+  const candidates = [];
+  const override = context.historyFile
+    || process.env.HOUSEKEEPER_HISTORY_FILE
+    || null;
+
+  if (override) {
+    candidates.push(override);
+  } else {
+    const home = homedir();
+    candidates.push(path.join(home, ".zsh_history"));
+    candidates.push(path.join(home, ".bash_history"));
+  }
+
+  // Try each candidate; return count on first readable file
+  for (const file of candidates) {
+    if (!existsSync(file)) continue;
+    let text;
+    try { text = readFileSync(file, "utf8"); } catch { continue; }
+    // Case-insensitive substring scan for the plugin's name portion
+    const needle = pluginKey.toLowerCase();
+    let count = 0;
+    for (const line of text.split("\n")) {
+      if (line.toLowerCase().includes(needle)) count++;
+    }
+    return count;
+  }
+
+  // No readable history file found
+  return -1;
+}
+
+// T-300: count recent learning activity for a plugin.
+// Checks applied.jsonl for entries whose targets include a path under
+// the plugin's installPath within the grace window.
+function countLearningActivity(installPath, context) {
+  if (!context.appliedEntries || context.appliedEntries.length === 0) return 0;
+  const graceMs = (context.config?.pruneGraceDays || PLUGIN_PRUNE_GRACE_DAYS) * 24 * 60 * 60 * 1000;
+  const since = context.now - graceMs;
+  let count = 0;
+  for (const entry of context.appliedEntries) {
+    const ts = new Date(entry.ts).getTime();
+    if (isNaN(ts) || ts < since) continue;
+    if (!Array.isArray(entry.targets)) continue;
+    if (entry.targets.some((t) => typeof t === "string" && t.startsWith(installPath))) {
+      count++;
+    }
+  }
+  return count;
+}
+
+// T-300: detectPluginUnusedPastGrace — audit-only in v0.4.0.
+// Emits `inform` for each installed plugin that:
+//   1. Has existed longer than pruneGraceDays (default 30, from config).
+//   2. Has no recent activity in applied.jsonl.
+//   3. Has no hits in shell history (best-effort; unavailable → historyAvailable: false).
+function detectPluginUnusedPastGrace(context) {
+  const graceDays = context.config?.pruneGraceDays || PLUGIN_PRUNE_GRACE_DAYS;
+  const graceMs = graceDays * 24 * 60 * 60 * 1000;
+  const out = [];
+
+  for (const entry of context.pluginEntries) {
+    if (!entry.installPath || !existsSync(entry.installPath)) continue;
+
+    // Signal 1: installed-at via mtime of install directory
+    const installedAtMs = mtimeMs(entry.installPath);
+    const ageMs = context.now - installedAtMs;
+    if (ageMs < graceMs) continue; // within grace window
+
+    // Signal 2: learning surface activity within grace window
+    const recentActivity = countLearningActivity(entry.installPath, context);
+    if (recentActivity > 0) continue;
+
+    // Signal 3: shell history scan (best-effort)
+    const historyHits = scanShellHistory(entry.key || entry.name || "", context);
+    const historyAvailable = historyHits !== -1;
+    if (historyHits > 0) continue;
+
+    const daysOld = Math.floor(ageMs / (24 * 60 * 60 * 1000));
+    const structuralEvidence = [
+      `plugin installed at ${entry.installPath}`,
+      `installed approximately ${daysOld} days ago`,
+      `no clean/harden activity in last ${graceDays} days`,
+      historyAvailable
+        ? "no slash-command invocation found in shell history"
+        : "shell history not readable; activity signal degraded"
+    ];
+
+    const finding = {
+      id: "plugin.unused_past_grace",
+      class: "hygiene",
+      claimLevel: "observation",
+      targetPath: entry.installPath,
+      surface: makeSurfaceClassification({
+        surfaceClass: "claude-app-data",
+        ownerClass: "claude-managed",
+        loadBearingClass: "possibly-load-bearing",
+        sensitivityClass: "private-path",
+        executionClass: "inert",
+        rollbackClass: "snapshot-possible",
+        scopeClass: "in-scope",
+        confidence: "medium"
+      }),
+      evidence: {
+        structural: structuralEvidence,
+        freshness: [`grace window: ${graceDays}d`]
+      },
+      missingKeys: [
+        "live evidence the user does not want this plugin",
+        "telemetry of plugin use beyond shell history"
+      ],
+      summary: `plugin ${entry.key || entry.name || entry.installPath} has not been active in ${daysOld} days`,
+      nextAllowedStep: "review and consider `claude plugin uninstall` manually",
+      blockedActions: [
+        "uninstall plugin automatically",
+        "call plugin not wanted"
+      ],
+      forceStance: "inform",
+      // T-303: surface historyAvailable flag on the finding for renderers / JSON consumers
+      historyAvailable
+    };
+
+    out.push(finding);
+  }
+  return out;
 }
 
 // T-409: probe operations directory for existence and readability without

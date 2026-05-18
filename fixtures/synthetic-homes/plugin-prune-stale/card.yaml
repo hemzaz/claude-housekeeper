@@ -1,0 +1,26 @@
+id: plugin-prune-stale
+purpose: >
+  3-plugin home: stale-plugin (90 days, no activity), active-plugin (90 days,
+  recent applied.jsonl entry), fresh-plugin (5 days, no activity). Audit should
+  emit exactly one finding — for stale-plugin only.
+note: >
+  mtime is set dynamically by tests via utimesSync. This fixture validates the
+  detector's grace-window + activity-signal logic without relying on static mtime.
+finding:
+  id: plugin.unused_past_grace
+  class: integrity
+  stance: inform
+  claimLevel: observation
+plugins:
+  - name: stale-plugin
+    age_days: 90
+    activity: none
+    expected: flagged
+  - name: active-plugin
+    age_days: 90
+    activity: recent applied.jsonl entry
+    expected: not-flagged
+  - name: fresh-plugin
+    age_days: 5
+    activity: none
+    expected: not-flagged

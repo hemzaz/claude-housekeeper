@@ -1,6 +1,6 @@
 ---
 description: Inspect Claude Code home state and run guarded Housekeeper cleanup/rollback
-argument-hint: '[diagnose|plan|verify|clean|harden|rollback|learn] [--safe] [--json] [--redact] [--scope=settings|plugins|registry|housekeeper|all] [--home=/path] [--max-files=N] [--config=/path] [learn: --prune --older-than=N | --mark-false-positive <op_id>]'
+argument-hint: '[diagnose|plan|verify|clean|harden|rollback|learn|prune] [--safe] [--json] [--redact] [--scope=settings|plugins|registry|housekeeper|all] [--home=/path] [--max-files=N] [--config=/path] [learn: --prune --older-than=N | --mark-false-positive <op_id>]'
 disable-model-invocation: true
 allowed-tools: Bash(node:*), Bash(claude:*)
 ---
