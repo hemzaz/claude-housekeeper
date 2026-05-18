@@ -37,7 +37,7 @@ independent (dev workflow only).
     MCP server hot-reload after rewrite
   - Verify: file exists, ≥ 300 lines, cites ≥ 3 external sources
 
-- [ ] **T-D04 (tie-breaker)** Synthesize into `docs/design/v0.4-design.md`
+- [x] **T-D04 (tie-breaker)** Synthesize into `docs/design/v0.4-design.md`
   - Resolve every cross-memo conflict; promote Decision Log rows for
     Q1–Q5
   - Verify: every Q1–Q5 has a row with date and rationale; file refs
