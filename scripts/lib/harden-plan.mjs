@@ -156,7 +156,10 @@ const HARDENABLE_DETECTORS_V03 = new Map([
   // in plan output as a candidate, but the identity-marker patch routes the
   // preApply hook through strict JSON.parse which fails (the file is invalid
   // JSON), surfacing settings-shape-unknown refusal per Q1 ruling.
-  ["settings.invalid_json", buildInvalidJsonSentinel]
+  ["settings.invalid_json", buildInvalidJsonSentinel],
+  // T-402 — remove all hooks entries whose `cwd` field references a directory
+  // that does not exist on disk. Same `set`-on-`["hooks"]` strategy as T-300.
+  ["hooks.config_dangling", buildHooksConfigDanglingPatch]
 ]);
 
 // Test seam: callers may inject extra detector ids that should be treated as
@@ -267,6 +270,21 @@ function buildInvalidJsonSentinel(finding) {
   return buildIdentityMarkerPatch();
 }
 
+// T-402 — hooks.config_dangling
+//
+// Returns a `set` patch on ["hooks"] whose value is the parsed hooks tree with
+// every entry removed whose `cwd` field references a directory that does not
+// exist on disk. Mirrors detectHooksConfigDangling's existsSync semantics.
+// Same `set`-on-`["hooks"]` idempotency strategy as T-300.
+function buildHooksConfigDanglingPatch(finding) {
+  const parsed = parseSettingsSync(finding.targetPath);
+  if (!parsed || typeof parsed !== "object" || !parsed.hooks) {
+    return buildIdentityMarkerPatch();
+  }
+  const cleanedHooks = pruneDanglingCwdHooks(parsed.hooks);
+  return { op: "set", path: ["hooks"], value: cleanedHooks };
+}
+
 // T-201 — MCP rewrite patch builder.
 //
 // Returns a `set` patch on ["mcpServers", <name>, "command"] replacing the
@@ -331,6 +349,34 @@ function pruneDanglingHooks(hooksTree) {
     const out = {};
     for (const [key, child] of Object.entries(hooksTree)) {
       const pruned = pruneDanglingHooks(child);
+      if (pruned !== null) out[key] = pruned;
+    }
+    return out;
+  }
+  return hooksTree;
+}
+
+// T-402 — walk the hooks tree and drop any object entry whose `cwd` field
+// is an absolute path that does not exist on disk. Mirrors
+// detectHooksConfigDangling's existsSync semantics exactly. Pure: returns a
+// new tree, never mutates the input.
+function pruneDanglingCwdHooks(hooksTree) {
+  if (Array.isArray(hooksTree)) {
+    const out = [];
+    for (const item of hooksTree) {
+      const child = pruneDanglingCwdHooks(item);
+      if (child !== null) out.push(child);
+    }
+    return out;
+  }
+  if (hooksTree && typeof hooksTree === "object") {
+    // Leaf entry: if it has a cwd that is a missing absolute path, prune it.
+    if (typeof hooksTree.cwd === "string" && hooksTree.cwd.startsWith("/")) {
+      if (!existsSync(hooksTree.cwd)) return null;
+    }
+    const out = {};
+    for (const [key, child] of Object.entries(hooksTree)) {
+      const pruned = pruneDanglingCwdHooks(child);
       if (pruned !== null) out[key] = pruned;
     }
     return out;
@@ -502,8 +548,9 @@ export async function composeHardenPlan(home, options = {}) {
     return { schemaVersion: "0.2", home, targetDetectorId, targetPath, operations, refused, composedAt, reportHash };
   }
 
-  // For each candidate, run the settings-rewrite preApply hook + NFS/SMB check.
-  const handler = MUTATION_REGISTRY["settings-rewrite"];
+  // For each candidate, run the json-rewrite preApply hook + NFS/SMB check.
+  // T-400: "json-rewrite" is the canonical kind; "settings-rewrite" is an alias.
+  const handler = MUTATION_REGISTRY["json-rewrite"];
   for (const finding of candidates) {
     const tp = finding.targetPath;
     if (!tp) continue;
@@ -597,7 +644,7 @@ export async function composeHardenPlan(home, options = {}) {
         path: ["mcpServers", sourceServerName, "command"],
         value: newPath
       };
-      const op = { kind: "settings-rewrite", targetPath: tp, patch: rewritePatch };
+      const op = { kind: "json-rewrite", targetPath: tp, patch: rewritePatch };
 
       const preApplyResult = await handler.preApply(op);
       if (preApplyResult instanceof PreApplyRefusal) {
@@ -617,7 +664,7 @@ export async function composeHardenPlan(home, options = {}) {
       operations.push({
         detectorId: finding.id,
         targetPath: tp,
-        mutationKind: "settings-rewrite",
+        mutationKind: "json-rewrite",
         mutationOp: op,
         snapshotStrategy: "file-replace",
         estimatedBytes: preApplyResult.plannedBytes || 0,
@@ -628,7 +675,7 @@ export async function composeHardenPlan(home, options = {}) {
     }
 
     const patch = generatePatchForFinding(finding, hardenable);
-    const op = { kind: "settings-rewrite", targetPath: tp, patch };
+    const op = { kind: "json-rewrite", targetPath: tp, patch };
 
     const preApplyResult = await handler.preApply(op);
     if (preApplyResult instanceof PreApplyRefusal) {
@@ -648,7 +695,7 @@ export async function composeHardenPlan(home, options = {}) {
     operations.push({
       detectorId: finding.id,
       targetPath: tp,
-      mutationKind: "settings-rewrite",
+      mutationKind: "json-rewrite",
       mutationOp: op,
       snapshotStrategy: "file-replace",
       estimatedBytes: preApplyResult.plannedBytes || 0,
@@ -707,7 +754,7 @@ export async function validateHardenPlan(plan, home) {
   // JSONC comment, a structural break) between compose and validate. Any
   // preApply refusal becomes a drift signal because the plan can no longer
   // be safely executed.
-  const handler = MUTATION_REGISTRY["settings-rewrite"];
+  const handler = MUTATION_REGISTRY["json-rewrite"];
   for (const op of plan.operations) {
     const result = await handler.preApply(op.mutationOp);
     if (result instanceof PreApplyRefusal) {
@@ -743,7 +790,7 @@ export async function executeHardenPlan(validatedPlan, home) {
     throw err;
   }
 
-  const handler = MUTATION_REGISTRY["settings-rewrite"];
+  const handler = MUTATION_REGISTRY["json-rewrite"];
 
   try {
     await gcSnapshots(snapshotHome);

@@ -52,7 +52,7 @@ const HARDENABLE_OVERRIDE = ["settings.hook_path_dangling"];
 
 // ── T-200 happy path ────────────────────────────────────────────────────
 
-test("composeHardenPlan happy path: hardenable detector → 1 operation, 0 refusals, settings-rewrite kind", async () => {
+test("composeHardenPlan happy path: hardenable detector → 1 operation, 0 refusals, json-rewrite kind (T-400)", async () => {
   const home = makeSyntheticHome();
   const { settingsPath } = seedDanglingHookSettings(home);
 
@@ -65,7 +65,7 @@ test("composeHardenPlan happy path: hardenable detector → 1 operation, 0 refus
   assert.equal(plan.schemaVersion, "0.2");
   assert.equal(plan.refused.length, 0, `unexpected refusals: ${JSON.stringify(plan.refused)}`);
   assert.equal(plan.operations.length, 1);
-  assert.equal(plan.operations[0].mutationKind, "settings-rewrite");
+  assert.equal(plan.operations[0].mutationKind, "json-rewrite"); // T-400: canonical kind
   assert.equal(plan.operations[0].detectorId, "settings.hook_path_dangling");
   assert.equal(plan.operations[0].targetPath, settingsPath);
   assert.equal(typeof plan.reportHash, "string");

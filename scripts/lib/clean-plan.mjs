@@ -182,13 +182,16 @@ export const MUTATION_REGISTRY = Object.freeze({
 const CLEANABLE_DETECTORS_V02 = new Set([
   "plugin.cache_unreferenced",
   "housekeeper.stale_lock",
-  "registry.local_command_identical"
+  "registry.local_command_identical",
+  "registry.command_dangling",       // T-401 (file-unlink)
+  "registry.skills_entry_dangling"   // T-403 (dir-rmtree)
 ]);
 
 // Detectors whose findings compose into file-unlink (vs dir-rmtree) operations.
 const FILE_UNLINK_DETECTORS_V02 = new Set([
   "housekeeper.stale_lock",
-  "registry.local_command_identical"
+  "registry.local_command_identical",
+  "registry.command_dangling"  // T-401
 ]);
 
 // LOCK_STALE_WINDOW_MS is imported from lock.mjs — used by the
@@ -1022,9 +1025,9 @@ export async function composeBatchCleanPlan(home, options = {}) {
     if (!reportHash) reportHash = perPlan.reportHash;
 
     for (const op of perPlan.operations) {
-      // C6: settings-rewrite excluded from batch. Convert to refusal so the
-      // operator routes to harden. Use a synthetic detectorId for visibility.
-      if (op.mutationKind === "settings-rewrite") {
+      // C6: json-rewrite (and back-compat alias settings-rewrite) excluded from
+      // batch. Convert to refusal so the operator routes to harden.
+      if (op.mutationKind === "json-rewrite" || op.mutationKind === "settings-rewrite") {
         refused.push({
           class: "CleanPlanRefusal",
           reason: "settings-rewrite-not-batchable",

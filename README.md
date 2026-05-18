@@ -300,6 +300,9 @@ Status legend:
 | `registry.local_command_identical` | **cleanable** (v0.2.0-beta.1) | no |
 | `registry.local_command_diverged` | never (intent-laden) | no |
 | `registry.broken_frontmatter` | planned | no |
+| `registry.command_dangling` | **cleanable** (v0.4.0) | no |
+| `registry.skills_entry_dangling` | **cleanable** (v0.4.0) | no |
+| `hooks.config_dangling` | no | **hardenable** (v0.4.0) |
 | `housekeeper.interrupted_operation` | recovery via `rollback <id>` or `rollback --abort <id>` | no |
 | `housekeeper.config_invalid` | planned | no |
 | `housekeeper.operations_unreadable` | never (informational) | no |

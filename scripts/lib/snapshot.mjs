@@ -758,8 +758,9 @@ function deepEqual(a, b) {
 }
 
 /**
- * MUTATION_REGISTRY — settings-rewrite contract for v0.3 harden pipeline.
- * Per docs/design/v0.3-design.md §3.1.
+ * MUTATION_REGISTRY — json-rewrite (canonical, T-400) and settings-rewrite
+ * (alias for v0.3 back-compat) contract for the v0.3/v0.4 harden pipeline.
+ * Per docs/design/v0.3-design.md §3.1 and docs/design/v0.4-design.md §2.
  *
  * Each registered kind is an object with three async hooks:
  *   preApply(op) → { ok: true, plannedBytes } | PreApplyRefusal
@@ -769,9 +770,13 @@ function deepEqual(a, b) {
  * The hooks are deterministic and stateless: they take the operation payload
  * plus (for rollback) the matching snapshot entry, and return a value or refusal.
  * No global state, no fs mutations outside the documented paths.
+ *
+ * T-400: "json-rewrite" is the canonical kind name; "settings-rewrite" is an
+ * alias pointing at the same handler object for v0.3 back-compat. Both names
+ * reference the identical frozen object so all callers see zero behaviour change.
  */
-export const MUTATION_REGISTRY = Object.freeze({
-  "settings-rewrite": Object.freeze({
+// Internal handler object — defined once, referenced by both registry keys.
+const _jsonRewriteHandler = Object.freeze({
     /**
      * preApply — runs BEFORE takeSnapshot. Five steps per design §3.1:
      *   1. Strict JSON.parse the file at op.targetPath
@@ -878,5 +883,15 @@ export const MUTATION_REGISTRY = Object.freeze({
       await mkdir(dirname(op.targetPath), { recursive: true });
       await copyFile(snapshotEntry.snapshotPath, op.targetPath);
     }
-  })
+});
+
+// T-400: MUTATION_REGISTRY exposes both the canonical "json-rewrite" kind
+// and the v0.3 back-compat alias "settings-rewrite". Both point at the same
+// frozen handler object so all callers — including existing v0.3
+// HARDENABLE_DETECTORS_V03 tests — see zero behaviour change.
+export const MUTATION_REGISTRY = Object.freeze({
+  "json-rewrite": _jsonRewriteHandler,
+  // Alias — identical reference, not a copy. v0.3 callers that reference
+  // MUTATION_REGISTRY["settings-rewrite"] continue to work byte-for-byte.
+  "settings-rewrite": _jsonRewriteHandler
 });
