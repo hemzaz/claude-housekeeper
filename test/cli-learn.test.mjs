@@ -242,8 +242,8 @@ test("learn --mark-false-positive updates state.json", () => {
   const stateFile = path.join(dir, "state.json");
   assert.ok(existsSync(stateFile), "state.json must be created");
   const state = JSON.parse(readFileSync(stateFile, "utf8"));
-  assert.ok(typeof state.falsePositives === "number", "falsePositives must be a number");
-  assert.ok(state.falsePositives >= 1, "falsePositives must be incremented");
+  assert.ok(Array.isArray(state.falsePositives), "falsePositives must be an array");
+  assert.ok(state.falsePositives.length >= 1, "falsePositives must have at least one entry");
 });
 
 // ---------------------------------------------------------------------------
@@ -280,12 +280,13 @@ test("learn --mark-false-positive combined with --prune exits 2", () => {
 // Test 10: --mark-false-positive increments existing counter
 // ---------------------------------------------------------------------------
 
-test("learn --mark-false-positive increments an existing falsePositives counter", () => {
+test("learn --mark-false-positive with legacy counter shape migrates to array", () => {
   const { parent } = makeLearnHome();
   const dir = learningDir(parent);
   mkdirSync(dir, { recursive: true });
   mkdirSync(path.join(parent, ".claude"), { recursive: true });
 
+  // Write legacy counter-only shape (3 = prior marks before T-105 schema change).
   const stateFile = path.join(dir, "state.json");
   writeFileSync(stateFile, JSON.stringify({ learnSchemaVersion: "0.4", falsePositives: 3 }) + "\n");
 
@@ -294,5 +295,8 @@ test("learn --mark-false-positive increments an existing falsePositives counter"
   assert.equal(result.status, 0, `expected exit 0: ${result.stderr}`);
 
   const state = JSON.parse(readFileSync(stateFile, "utf8"));
-  assert.equal(state.falsePositives, 4, "must increment from 3 to 4");
+  // After migration: array shape with the new marker; old counter is discarded.
+  assert.ok(Array.isArray(state.falsePositives), "falsePositives must be migrated to array");
+  assert.equal(state.falsePositives.length, 1, "one entry for the new mark (legacy counter discarded)");
+  assert.equal(state.falsePositives[0].opId, opId);
 });

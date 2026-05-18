@@ -152,12 +152,16 @@ export async function readSummary(home, options = {}) {
     readJsonlFile(path.join(dir, "rollbacks.jsonl"))
   ]);
 
-  // Read state.json if present
+  // Read state.json if present. Supports both the legacy counter-only shape
+  // ({ falsePositives: <number> }) and the current array shape
+  // ({ falsePositives: <array> }). Count is array.length in the new shape.
   let falsePositiveCount = 0;
   try {
     const stateText = await readFile(path.join(dir, "state.json"), "utf8");
     const state = JSON.parse(stateText);
-    if (typeof state.falsePositives === "number") {
+    if (Array.isArray(state.falsePositives)) {
+      falsePositiveCount = state.falsePositives.length;
+    } else if (typeof state.falsePositives === "number") {
       falsePositiveCount = state.falsePositives;
     }
   } catch {
@@ -284,27 +288,71 @@ export async function pruneLearningFiles(home, olderThanDays) {
 // markFalsePositive
 // ---------------------------------------------------------------------------
 
-// Increment (or initialise) the falsePositives counter in state.json for the
-// given opId. Creates the learning directory and state.json if absent.
+// Record a false-positive marker in state.json for the given opId.
+// Looks up the op in applied.jsonl to extract the detector id and target path,
+// then appends a structured marker entry. If the op is not found in
+// applied.jsonl, records the marker with the provided hint fields (if any).
+//
+// opts: { targetDetector?: string, targetPath?: string } — caller-supplied hints
+// used when applied.jsonl lookup fails or is absent.
+//
+// Backwards-compatible: if state.json has the old counter-only shape
+// ({ falsePositives: <number> }), it is migrated to the array shape on first write.
+//
 // opId format is validated by the caller (CLI layer).
-export async function markFalsePositive(home, opId) {
+export async function markFalsePositive(home, opId, opts = {}) {
   const dir = learningDir(home);
   await ensureDir(dir);
   const stateFile = path.join(dir, "state.json");
 
-  let state = { learnSchemaVersion: LEARNING_SCHEMA_VERSION, falsePositives: 0 };
+  // Look up the op in applied.jsonl to get detector + targetPath.
+  let targetDetector = opts.targetDetector || null;
+  let targetPath = opts.targetPath || null;
+  try {
+    const appliedRecords = await readJsonlFile(path.join(dir, "applied.jsonl"));
+    const match = appliedRecords.find((r) => r.opId === opId);
+    if (match) {
+      if (match.detectorId) targetDetector = match.detectorId;
+      if (match.targetPath) targetPath = match.targetPath;
+    }
+  } catch {
+    // applied.jsonl absent or unreadable — proceed with hint fields only
+  }
+
+  // Read existing state.json, migrating the legacy counter-only shape.
+  let state = { learnSchemaVersion: LEARNING_SCHEMA_VERSION, falsePositives: [] };
   try {
     const text = await readFile(stateFile, "utf8");
     const parsed = JSON.parse(text);
-    if (typeof parsed.falsePositives === "number") {
+    if (Array.isArray(parsed.falsePositives)) {
+      // Current array shape — use as-is.
       state = parsed;
+      state.learnSchemaVersion = LEARNING_SCHEMA_VERSION;
+    } else if (typeof parsed.falsePositives === "number") {
+      // Legacy counter-only shape — migrate silently. The counter is discarded
+      // because the new array carries the same information (array.length).
+      state = {
+        learnSchemaVersion: LEARNING_SCHEMA_VERSION,
+        falsePositives: []
+      };
     }
   } catch {
     // absent or malformed — start fresh
   }
 
-  state.falsePositives = (state.falsePositives || 0) + 1;
-  state.learnSchemaVersion = LEARNING_SCHEMA_VERSION;
+  // Idempotent: if this opId is already marked, update in place (no-op on identical entry).
+  const existingIdx = state.falsePositives.findIndex((m) => m.opId === opId);
+  const marker = {
+    opId,
+    markedAt: new Date().toISOString(),
+    targetDetector,
+    targetPath
+  };
+  if (existingIdx >= 0) {
+    state.falsePositives[existingIdx] = marker;
+  } else {
+    state.falsePositives.push(marker);
+  }
 
   await atomicWrite(stateFile, JSON.stringify(state) + "\n");
 }

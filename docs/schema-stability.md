@@ -38,6 +38,7 @@ Source: `scripts/lib/report.mjs` `renderJsonReport()` plus
 | `findings[].nextAllowedStep` | stable | string; the next step the stance permits |
 | `findings[].blockedActions` | stable | strings are descriptive, not enum-locked |
 | `findings[].proposedProbe` | stable, nullable | probe metadata object when next step references a live probe (T-210); absent otherwise |
+| `findings[].falsePositiveSeenBefore` | stable, nullable | count of prior false-positive markers for this detector + targetPath pair (T-105); absent (not zero) when no markers exist; additive, no schemaVersion bump |
 | `boundaries` | stable | list may be empty; element shape below |
 | `degraded` | stable | list may be empty; element shape below |
 
