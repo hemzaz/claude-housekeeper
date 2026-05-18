@@ -569,6 +569,25 @@ test("T-099 composeCleanPlan: allowedExecutionClasses widens rule 4", async () =
   );
 });
 
+// ── T-102: appendRefusal wired into composeCleanPlan ─────────────────────────
+
+test("T-102 composeCleanPlan: refusals.jsonl written once per refused finding", async () => {
+  const home = makeSyntheticHome();
+  // Within-grace cache → fires plugin.expected_orphan (non-cleanable).
+  const cacheDir = path.join(home, "plugins", "cache", "test-market", "test-tool", "0.9.0");
+  mkdirSync(cacheDir, { recursive: true });
+  writeFileSync(path.join(cacheDir, "plugin.json"), JSON.stringify({ name: "test-tool", version: "0.9.0" }) + "\n");
+
+  const plan = await composeCleanPlan(home, { target: "plugin.expected_orphan" });
+  assert.ok(plan.refused.length > 0, "expected at least one refusal");
+
+  const refusalsPath = path.join(home, ".claude", "housekeeper", "learning", "refusals.jsonl");
+  const lines = (await import("node:fs/promises")).readFile(refusalsPath, "utf8")
+    .then((text) => text.split("\n").filter((l) => l.trim().length > 0));
+  assert.equal((await lines).length, plan.refused.length,
+    "refusals.jsonl line count must equal plan.refused.length");
+});
+
 test("G7 nextStep: owner refusal message and nextStep do not contain literal 'ownerClass'", async () => {
   // Refusal text for rules 4/5/6 was reworded to drop "ownerClass",
   // "executionClass", and "rollbackClass" tokens. Exercise via a no-mutation

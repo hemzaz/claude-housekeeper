@@ -554,6 +554,46 @@ test("executeHardenPlan writes a snapshot manifest that records the pre-apply fi
   assert.ok(statSync(fileEntry.snapshotPath).size > 0);
 });
 
+// ── T-102/T-103: appendRefusal + appendApplied wired into harden pipeline ───
+
+test("T-102 composeHardenPlan: refusals.jsonl written once per refused finding", async () => {
+  const home = makeSyntheticHome();
+  writeFileSync(path.join(home, "settings.json"), "{}\n");
+  // No dangling hooks → no-finding-for-target refusal.
+  const plan = await composeHardenPlan(home, {
+    target: "settings.hook_path_dangling",
+    path: path.join(home, "settings.json"),
+    __overrideHardenable: HARDENABLE_OVERRIDE
+  });
+  assert.equal(plan.refused.length, 1, "expected one refusal");
+
+  const { readFile } = await import("node:fs/promises");
+  const refusalsPath = path.join(home, ".claude", "housekeeper", "learning", "refusals.jsonl");
+  const text = await readFile(refusalsPath, "utf8");
+  const lineCount = text.split("\n").filter((l) => l.trim().length > 0).length;
+  assert.equal(lineCount, plan.refused.length, "refusals.jsonl line count must equal plan.refused.length");
+});
+
+test("T-103 executeHardenPlan: applied.jsonl written once after verified manifest", async () => {
+  const home = makeSyntheticHome();
+  const { settingsPath } = seedDanglingHookSettings(home);
+
+  const plan = await composeHardenPlan(home, {
+    target: "settings.hook_path_dangling",
+    path: settingsPath,
+    __overrideHardenable: HARDENABLE_OVERRIDE
+  });
+  const validated = await validateHardenPlan(plan, home);
+  const manifest = await executeHardenPlan(validated, home);
+  assert.equal(manifest.status, "verified");
+
+  const { readFile } = await import("node:fs/promises");
+  const appliedPath = path.join(home, ".claude", "housekeeper", "learning", "applied.jsonl");
+  const text = await readFile(appliedPath, "utf8");
+  const lineCount = text.split("\n").filter((l) => l.trim().length > 0).length;
+  assert.equal(lineCount, 1, "applied.jsonl must have exactly one line after one execute");
+});
+
 // ── Plan shape: schemaVersion is "0.2" (no bump per design §C12) ────────
 
 test("HardenPlan: schemaVersion stays at '0.2' (no schema bump in v0.3)", async () => {

@@ -8,6 +8,7 @@ import { copyFile, mkdir, readFile, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { atomicWrite, hashFile } from "./snapshot.mjs";
 import { acquireLock, releaseLock, LockHeldError } from "./lock.mjs";
+import { appendRollback } from "./learning.mjs";
 
 const ROLLBACKABLE_STATUSES = new Set(["applied", "verified", "snapshot_taken"]);
 
@@ -291,9 +292,21 @@ export async function executeRollbackPlan(plan, home) {
       if (entry) entry.rollbackVerified = true;
     }
 
+    const fromStatus = manifest.status;
     manifest.status = "rolled_back";
     manifest.rolledBackAt = new Date().toISOString();
     await atomicWrite(sourceManifestPath, JSON.stringify(manifest, null, 2) + "\n");
+
+    try {
+      await appendRollback(home, {
+        opId: manifest.id || plan.opId,
+        fromStatus,
+        toStatus: "rolled_back",
+        filesRestoredCount: plan.operations.length
+      });
+    } catch (err) {
+      process.stderr.write(`[rollback-plan] appendRollback failed: ${err && err.message}\n`);
+    }
 
     return manifest;
   } finally {

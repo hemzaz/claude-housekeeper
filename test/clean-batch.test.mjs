@@ -448,6 +448,28 @@ test("T-504 CLI: batch dry-run (--confirm, no --yes) prints plan and exits 2", (
   assert.match(result.stderr, /Refusing mutation/);
 });
 
+// ── T-102: appendRefusal wired into composeBatchCleanPlan ────────────────────
+
+test("T-102 composeBatchCleanPlan: refusals.jsonl written once per refused pair", async () => {
+  const home = makeHome();
+  // A fresh (within-grace) cache → plugin.expected_orphan → refused.
+  const freshCache = path.join(home, "plugins", "cache", "test-market", "tool-fresh", "1.0.0");
+  mkdirSync(freshCache, { recursive: true });
+  writeFileSync(path.join(freshCache, "plugin.json"), JSON.stringify({ name: "tool-fresh", version: "1.0.0" }) + "\n");
+
+  const plan = await composeBatchCleanPlan(home, {
+    pairs: [{ target: "plugin.expected_orphan", path: freshCache }]
+  });
+  assert.ok(plan.refused.length > 0, "expected at least one refusal");
+
+  const { readFile } = await import("node:fs/promises");
+  const refusalsPath = path.join(home, ".claude", "housekeeper", "learning", "refusals.jsonl");
+  const text = await readFile(refusalsPath, "utf8");
+  const lineCount = text.split("\n").filter((l) => l.trim().length > 0).length;
+  assert.equal(lineCount, plan.refused.length,
+    "refusals.jsonl line count must equal plan.refused.length");
+});
+
 // ── T-504: --help text mentions --batch ──────────────────────────────────────
 
 test("T-504 CLI --help includes --batch wording", () => {
