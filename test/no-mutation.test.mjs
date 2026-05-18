@@ -10,11 +10,13 @@ const scriptsDir = path.resolve(__dirname, "..", "scripts");
 // These files are the designated v0.2 + v0.3 mutation surfaces.
 // All other scripts/ files must remain read-only.
 // `lib/harden-plan.mjs` added in v0.3 Phase 2 (T-200..T-204).
+// `lib/learning.mjs` added in v0.4 Phase 1 (T-100).
 const MUTATION_ALLOWLIST = new Set([
   "lib/snapshot.mjs",
   "lib/clean-plan.mjs",
   "lib/rollback-plan.mjs",
-  "lib/harden-plan.mjs"
+  "lib/harden-plan.mjs",
+  "lib/learning.mjs"
 ]);
 
 const FORBIDDEN = [
