@@ -12,13 +12,16 @@ import {
   executeCleanPlan,
   composeBatchCleanPlan,
   executeBatchCleanPlan,
+  composeStreamCleanPlan,
+  executeStreamCleanPlan,
   LockHeldError,
   PlanDriftError,
   NotImplementedError,
   BatchBudgetError,
   BATCH_AGGREGATE_FILE_LIMIT,
   BATCH_AGGREGATE_BYTE_LIMIT,
-  BATCH_MAX_PAIRS
+  BATCH_MAX_PAIRS,
+  STREAM_CHUNK_SIZE
 } from "./lib/clean-plan.mjs";
 import {
   composeRollbackPlan,
@@ -95,7 +98,7 @@ Options:
                         assembleReport (Q-USER-2). Default: no deadline.
   --dry-run           For rollback, print the rollback plan without changing files.
   --abort             For rollback, cancel a snapshot_taken operation and delete
-                        its unused snapshot tree.
+                        its snapshot tree (not referenced by any operation).
   --confirm           Arm the mutation path for clean or rollback. Without this
                         flag, mutation-capable commands refuse mutation
                         (dry-run only). REQUIRED to actually mutate, but
@@ -116,8 +119,16 @@ Options:
                         \`diagnose\`. Repeat to clean multiple findings
                         (paired in order with --target).
   --batch=<n>         Maximum number of --target/--path pairs to process in
-                        one batch (default 10, max 50). Excludes
+                        one batch (default 10, max 50 without --stream).
+                        With --stream, N must be > 50; pairs are chunked
+                        into fixed 50-item snapshots (Q5 ruling). Excludes
                         settings-rewrite ops per v0.3 design C6.
+  --stream            Enable streaming mode for large batches (N > 50).
+                        Each chunk of 50 pairs gets its own snapshot
+                        manifest under a shared streamId. On chunk failure
+                        the stream halts without auto-rollback. Use
+                        rollback --stream=<id> to restore all chunks.
+                        Rejected when --batch=N ≤ 50 (stream-chunk-budget-exceeded).
   --mcp-command-rewrite=<old>=<new>
                       For harden --target=settings.mcp_command_missing: rewrite
                         the broken MCP server command to <new> instead of
@@ -169,12 +180,15 @@ function parseArgs(argv) {
     home: process.env.CLAUDE_HOME || homedir(),
     configPath: null,
     rollbackId: null,
+    rollbackStreamId: null,
     scanLimits: null,
     target: null,
     path: null,
     targets: [],
     paths: [],
     batchCap: null,
+    stream: false,
+    resumeStreamId: null,
     abort: false,
     timeoutSeconds: 0,
     // learn subcommand flags
@@ -202,11 +216,17 @@ function parseArgs(argv) {
     }
     else if (arg.startsWith("--target=")) options.targets.push(arg.slice("--target=".length));
     else if (arg.startsWith("--path=")) options.paths.push(arg.slice("--path=".length));
+    else if (arg === "--stream") options.stream = true;
+    else if (arg.startsWith("--resume=")) options.resumeStreamId = arg.slice("--resume=".length);
     else if (arg.startsWith("--batch=")) {
       const raw = arg.slice("--batch=".length);
       const parsed = Number(raw);
-      if (!Number.isInteger(parsed) || parsed <= 0 || parsed > BATCH_MAX_PAIRS) {
-        throw new Error(`Invalid --batch value: ${raw} — must be a positive integer ≤ ${BATCH_MAX_PAIRS}.`);
+      // With --stream: allow N > BATCH_MAX_PAIRS (validation deferred to runCleanStream).
+      // Without --stream: enforce ≤ BATCH_MAX_PAIRS (existing v0.3 behaviour).
+      // We don't know options.stream yet at parse time (flags may be in any order),
+      // so we accept any positive integer here and validate in runCleanBatch.
+      if (!Number.isInteger(parsed) || parsed <= 0) {
+        throw new Error(`Invalid --batch value: ${raw} — must be a positive integer.`);
       }
       options.batchCap = parsed;
     }
@@ -218,6 +238,7 @@ function parseArgs(argv) {
       }
       options.timeoutSeconds = parsed;
     }
+    else if (command === "rollback" && arg.startsWith("--stream=")) options.rollbackStreamId = arg.slice("--stream=".length);
     else if (command === "rollback" && !options.rollbackId) options.rollbackId = arg;
     else if (arg === "--prune") options.prune = true;
     else if (arg.startsWith("--older-than=")) {
@@ -269,6 +290,34 @@ function parseArgs(argv) {
     options.path = options.paths[0];
   }
   options.isBatch = options.pairs.length > 1 || options.batchCap !== null;
+
+  // T-601: post-parse --batch validation once --stream is known.
+  // Without --stream: enforce ≤ BATCH_MAX_PAIRS (v0.3 behaviour).
+  // With --stream: N ≤ 50 is rejected (no benefit, chunk-budget-exceeded).
+  if (!options.stream && options.batchCap !== null && options.batchCap > BATCH_MAX_PAIRS) {
+    throw new Error(
+      `Invalid --batch value: ${options.batchCap} — must be a positive integer ≤ ${BATCH_MAX_PAIRS}. Use --stream for larger batches.`
+    );
+  }
+  if (options.stream && options.batchCap !== null && options.batchCap <= STREAM_CHUNK_SIZE) {
+    throw new Error(
+      `stream-chunk-budget-exceeded: --stream requires --batch=N where N > ${STREAM_CHUNK_SIZE}. For ${options.batchCap} or fewer pairs, omit --stream and use the standard batch path.`
+    );
+  }
+  // --stream without explicit --batch: default batchCap stays null; runCleanStream
+  // uses the full pairs array. But we also need --stream to be rejected if no pairs.
+  if (options.stream && options.pairs.length > 0 && options.pairs.length <= STREAM_CHUNK_SIZE && options.batchCap === null) {
+    throw new Error(
+      `stream-chunk-budget-exceeded: --stream is only useful when processing more than ${STREAM_CHUNK_SIZE} pairs. You have ${options.pairs.length}. Omit --stream for this batch.`
+    );
+  }
+
+  // T-604: --resume= is rejected (stream resume is v0.5).
+  if (options.resumeStreamId) {
+    throw new Error(
+      `stream-resume-not-supported: Resuming a halted stream is not supported in v0.4. Roll back completed chunks with \`claude-housekeeper rollback --stream=<streamId>\` and restart.`
+    );
+  }
 
   return options;
 }
@@ -514,12 +563,71 @@ async function runCleanInner(options) {
   }
 }
 
+// T-601..T-605: stream clean handler. Routes through executeStreamCleanPlan
+// when --stream is set. Fixed 50-item chunks per Q5 ruling.
+async function runCleanStream(options) {
+  try {
+    // Dry-run: show what would happen per chunk without executing.
+    if (!options.yes) {
+      // Preview: collect the first two chunks from the generator to show the plan.
+      console.log("HOUSEKEEPER CLEAN (stream)");
+      const pairs = options.pairs;
+      const totalChunks = Math.ceil(pairs.length / STREAM_CHUNK_SIZE);
+      console.log(`${pairs.length} pair(s) → ${totalChunks} chunk(s) of up to ${STREAM_CHUNK_SIZE}. Op ids: (pending)\n`);
+      fail("Refusing mutation: --yes not passed. Pass --confirm --yes to skip the\nprompt and apply.", 2);
+      return;
+    }
+
+    const { streamId, chunks, streamPartial } = await executeStreamCleanPlan(options.home, {
+      pairs: options.pairs
+    });
+
+    if (options.json) {
+      printJson({ streamId, chunks: chunks.map((c) => ({ chunkIndex: c.chunkIndex, status: c.manifest.status })), streamPartial });
+      process.exitCode = streamPartial ? 1 : 0;
+      return;
+    }
+
+    const totalOps = chunks.reduce((sum, c) => {
+      // Count operations from the verified manifest files count.
+      return sum + (c.manifest.files ? c.manifest.files.length : 0);
+    }, 0);
+
+    console.log("HOUSEKEEPER CLEAN (stream)");
+    console.log(`${chunks.length} chunk(s) applied. Stream id: ${streamId}`);
+    console.log(`Total files: ${totalOps}\n`);
+    if (streamPartial) {
+      console.log("PARTIAL. Stream halted; some chunks did not complete.");
+      console.log("housekeeper.interrupted_operation will surface incomplete chunks on next diagnose.");
+    } else {
+      console.log("DONE. All chunks verified.");
+    }
+    console.log("");
+    console.log(`To roll back all chunks: claude-housekeeper rollback --stream=${streamId}`);
+    process.exitCode = streamPartial ? 1 : 0;
+  } catch (err) {
+    if (err instanceof LockHeldError) {
+      if (options.json) {
+        printJson({ error: "lock-held", pid: err.lockManifest.pid, hostname: err.lockManifest.hostname });
+      } else {
+        fail(`Lock held by pid ${err.lockManifest.pid} on ${err.lockManifest.hostname} until ${err.lockManifest.stalenessAt}. If the prior run is no longer active, delete ${options.home}/housekeeper/lock and retry.`, 2);
+      }
+      return;
+    }
+    throw err;
+  }
+}
+
 // T-500..T-504: batch clean handler. Mirrors runCleanInner branches 3/4 but
 // composes ONE plan covering N pairs and ONE snapshot manifest. Per Q3 ruling
 // (design §2.3): manifest-atomic verification; on any failure the manifest
 // stays `applied` with partialApply: true and the user runs `rollback <id>`
 // for all-or-none restore.
 async function runCleanBatch(options) {
+  // T-601: route to stream handler when --stream flag is set.
+  if (options.stream) {
+    return runCleanStream(options);
+  }
   try {
     const plan = await composeBatchCleanPlan(options.home, {
       pairs: options.pairs,
@@ -765,14 +873,75 @@ async function runHardenInner(options) {
   }
 }
 
-// Suppress unused-import warnings for batch budget constants surfaced for
-// downstream callers / tests.
+// Void batch budget constants so the linter does not say "not referenced";
+// these are exported for downstream callers / tests.
 void BATCH_AGGREGATE_FILE_LIMIT;
 void BATCH_AGGREGATE_BYTE_LIMIT;
+void STREAM_CHUNK_SIZE;
 
 async function runRollback(options) {
-  if (!options.rollbackId) {
-    fail("rollback requires an operation id, for example: rollback op_20260511143022_a1b2c3d4", 2);
+  if (!options.rollbackId && !options.rollbackStreamId) {
+    fail("rollback requires an operation id or --stream=<id>, for example: rollback op_20260511143022_a1b2c3d4 or rollback --stream=stream_20260511143022_a1b2c3d4", 2);
+    return;
+  }
+
+  // Stream rollback path: compose a multi-chunk rollback plan and execute in reverse.
+  if (options.rollbackStreamId) {
+    try {
+      const plan = await composeRollbackPlan(options.home, { streamId: options.rollbackStreamId });
+
+      if (plan.refused.length > 0) {
+        if (options.json) printJson({ refused: plan.refused });
+        else printRollbackRefusals(plan);
+        process.exitCode = 2;
+        return;
+      }
+
+      if (options.dryRun) {
+        if (options.json) printJson({ plan });
+        else printRollbackPlan(plan, { dryRun: true });
+        process.exitCode = 0;
+        return;
+      }
+
+      if (!options.confirm) {
+        if (options.json) printJson({ plan });
+        else printRollbackPlan(plan);
+        fail("Refusing rollback: --confirm not passed. Pass --confirm --yes to restore files.", 2);
+        return;
+      }
+
+      if (!options.yes) {
+        if (options.json) printJson({ plan });
+        else printRollbackPlan(plan);
+        fail("Refusing rollback: --yes not passed. Pass --confirm --yes to restore files.", 2);
+        return;
+      }
+
+      const validated = await validateRollbackPlan(plan, options.home);
+      const manifest = await executeRollbackPlan(validated, options.home);
+
+      if (options.json) {
+        printJson({ manifest });
+      } else {
+        console.log("HOUSEKEEPER STREAM ROLLBACK");
+        console.log(`Stream: ${options.rollbackStreamId}`);
+        console.log(`Chunks rolled back: ${manifest.chunks?.length ?? 0}`);
+        console.log("");
+        console.log("DONE. Stream rolled back.");
+      }
+      process.exitCode = manifest.status === "rolled_back" ? 0 : 1;
+    } catch (err) {
+      if (err instanceof RollbackLockHeldError) {
+        if (options.json) {
+          printJson({ error: "lock-held", pid: err.lockManifest.pid, hostname: err.lockManifest.hostname });
+        } else {
+          fail(`Lock held by pid ${err.lockManifest.pid} on ${err.lockManifest.hostname} until ${err.lockManifest.stalenessAt}. If the prior run is no longer active, delete ${options.home}/housekeeper/lock and retry.`, 2);
+        }
+        return;
+      }
+      throw err;
+    }
     return;
   }
 
