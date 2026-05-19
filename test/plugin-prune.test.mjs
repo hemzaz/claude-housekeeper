@@ -331,7 +331,9 @@ test("T9: --safe mode skips shell-history scan and adds safe-mode-no-shell-histo
 // ---------------------------------------------------------------------------
 
 test("T10: CLI prune --confirm exits 2 with prune-mutation-not-in-v0.4.0 message", () => {
-  const result = runCli(["prune", "--confirm"]);
+  const parent = mkdtempSync(path.join(tmpdir(), "ck-prune-t10-"));
+  buildHome(parent);
+  const result = runCli(["prune", "--confirm", `--home=${parent}`]);
   assert.strictEqual(result.status, 2, "prune --confirm must exit 2");
   const output = result.stdout + result.stderr;
   assert.ok(
@@ -345,7 +347,9 @@ test("T10: CLI prune --confirm exits 2 with prune-mutation-not-in-v0.4.0 message
 // ---------------------------------------------------------------------------
 
 test("T11: CLI prune --yes exits 2 with mutation refusal message", () => {
-  const result = runCli(["prune", "--yes"]);
+  const parent = mkdtempSync(path.join(tmpdir(), "ck-prune-t11-"));
+  buildHome(parent);
+  const result = runCli(["prune", "--yes", `--home=${parent}`]);
   assert.strictEqual(result.status, 2, "prune --yes must exit 2");
   const output = result.stdout + result.stderr;
   assert.ok(
