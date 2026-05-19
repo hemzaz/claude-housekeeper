@@ -96,7 +96,9 @@ const NEXT_STEP_BY_REASON = Object.freeze({
   "mcp-rewrite-target-not-executable":
     "Run chmod +x <new-path> and then re-run harden, or confirm you have passed the correct path.",
   "mcp-rewrite-source-not-found":
-    "Run diagnose to see the exact command path recorded in the failing MCP entry, then pass that exact string as the source side of --mcp-command-rewrite=<source>=<new-path>."
+    "Run diagnose to see the exact command path recorded in the failing MCP entry, then pass that exact string as the source side of --mcp-command-rewrite=<source>=<new-path>.",
+  "mcp-rewrite-foreign-owner":
+    "The rewrite target is owned by a different user. Re-run after chowning the target to your user account, or pass a path you own."
 });
 
 // ── T-200: parseMcpCommandRewrite ─────────────────────────────────────────────
@@ -611,6 +613,23 @@ export async function composeHardenPlan(home, options = {}) {
         continue;
       }
 
+      // T10b: new path must be owned by the running uid (no foreign-owner
+      // binaries). Closes the "rewrite to attacker-owned binary" hole per
+      // docs/threat-model.md §10.2 T10b and design §3.2 step 4.
+      if (typeof newStat.uid === "number" && newStat.uid !== process.getuid()) {
+        refused.push({
+          class: "HardenPlanRefusal",
+          reason: "mcp-rewrite-foreign-owner",
+          targetPath: tp,
+          detectorId: finding.id,
+          message: `--mcp-command-rewrite new path "${newPath}" is owned by uid ${newStat.uid}, not by the running user (uid ${process.getuid()}); harden will not rewrite an MCP server command to a path owned by another user`,
+          nextStep: nextStepFor("mcp-rewrite-foreign-owner"),
+          exitCode: 2
+        });
+        await safeAppendRefusal(home, finding.id, "mcp-rewrite-foreign-owner", tp);
+        continue;
+      }
+
       // T-202c: old path must match a broken mcpServers entry whose command
       // equals oldPath. The finding tells us an entry is broken, but we must
       // confirm that the specific server the user named matches.
@@ -862,6 +881,6 @@ export async function executeHardenPlan(validatedPlan, home) {
 // can do so without duplicating the file format.
 export { acquireLock as __acquireLockForTests, releaseLock as __releaseLockForTests };
 
-// suppress unused-import warnings for symbols only used in JSDoc
+// keep imports referenced only from JSDoc alive (silence linter warnings)
 void copyFile;
 void hasJsonComments;

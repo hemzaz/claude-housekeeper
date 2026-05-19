@@ -72,9 +72,13 @@ jobs:
           REF="${{ steps.ver.outputs.ref }}"
           TARBALL="${{ steps.pack.outputs.tarball }}"
           NOTES="${{ steps.notes.outputs.file }}"
+          EXTRA_FLAGS=()
+          case "$REF" in
+            *-*) EXTRA_FLAGS+=(--prerelease) ;;
+          esac
           if gh release view "$REF" >/dev/null 2>&1; then
             gh release upload "$REF" "$TARBALL" --clobber
-            gh release edit "$REF" --notes-file "$NOTES"
+            gh release edit "$REF" --notes-file "$NOTES" "${EXTRA_FLAGS[@]}"
           else
-            gh release create "$REF" "$TARBALL" --title "$REF" --notes-file "$NOTES"
+            gh release create "$REF" "$TARBALL" --title "$REF" --notes-file "$NOTES" "${EXTRA_FLAGS[@]}"
           fi

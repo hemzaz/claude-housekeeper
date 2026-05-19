@@ -223,6 +223,57 @@ test("composeHardenPlan mcpCommandRewrite: mcp-rewrite-source-not-found when old
   );
 });
 
+// ── T10b: refusal class — mcp-rewrite-foreign-owner ──────────────────────────
+
+test("composeHardenPlan mcpCommandRewrite: mcp-rewrite-foreign-owner when new path is owned by a different uid", async (t) => {
+  if (process.getuid && process.getuid() === 0) {
+    t.skip("test runner is uid 0 — no foreign-uid binary available on this host");
+    return;
+  }
+
+  const { existsSync, statSync } = await import("node:fs");
+  const candidates = ["/bin/sh", "/bin/ls", "/bin/cat", "/usr/bin/env"];
+  const selfUid = process.getuid();
+  let foreignBinary = null;
+  for (const candidate of candidates) {
+    if (!existsSync(candidate)) continue;
+    let st;
+    try {
+      st = statSync(candidate);
+    } catch {
+      continue;
+    }
+    if (!(st.mode & 0o111)) continue;
+    if (typeof st.uid !== "number" || st.uid === selfUid) continue;
+    foreignBinary = candidate;
+    break;
+  }
+  if (!foreignBinary) {
+    t.skip("no system binary on this host satisfies the foreign-owner precondition");
+    return;
+  }
+
+  const home = makeSyntheticHome();
+  const brokenCmd = ghostCommand(home);
+  const { settingsPath } = seedBrokenMcpSettings(home, brokenCmd);
+
+  const plan = await composeHardenPlan(home, {
+    target: "settings.mcp_command_missing",
+    path: settingsPath,
+    mcpCommandRewrite: { oldPath: brokenCmd, newPath: foreignBinary }
+  });
+
+  assert.equal(plan.operations.length, 0);
+  assert.equal(plan.refused.length, 1);
+  assert.equal(plan.refused[0].reason, "mcp-rewrite-foreign-owner");
+  assert.ok(plan.refused[0].nextStep.length > 0, "nextStep must be non-empty (G7)");
+  assert.ok(
+    plan.refused[0].message.includes(foreignBinary) ||
+    plan.refused[0].message.includes("owned by uid"),
+    "message must reference the foreign-owned path or uid mismatch"
+  );
+});
+
 // ── Idempotency ───────────────────────────────────────────────────────────────
 
 test("composeHardenPlan mcpCommandRewrite: applying the patch twice yields identical result (idempotency)", async () => {
