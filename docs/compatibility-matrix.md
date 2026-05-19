@@ -55,12 +55,15 @@ new `settings-network-filesystem` refusal class are documented in
 | CI `version-pin` job | `.github/workflows/ci.yml` | supported | asserts `docs/index.html` contains `v$(jq -r .version package.json)`; closes G4 release-readiness gap |
 | Q1–Q5 outcomes | recorded | n/a | Q1 refuse (`settings-shape-unknown`); Q2 refuse v0.3 (`settings-jsonc-detected`); Q3 manifest-atomic no auto-rollback; Q4 per-detector `hardenable` flag; Q5 CI check |
 
-## v0.4.0 surface
+## v0.4.0 / v0.4.1 surface
 
-`v0.4.0` (and the `0.4.0-beta.1` prerelease it promotes) carries the
-v0.3.0 matrix forward unchanged. The rows below record the v0.4-specific
-surfaces. The `jsonc-parser` runtime dependency is the one addition to
-the dependency graph — all other modules remain pure Node.js built-ins.
+`v0.4.0` (promoted from `0.4.0-beta.1`) and the `v0.4.1` backlog-drain
+patch carry the v0.3.0 matrix forward unchanged. The rows below record
+the v0.4-specific surfaces. The `jsonc-parser` runtime dependency is the
+one addition to the dependency graph — all other modules remain pure
+Node.js built-ins. The only v0.4.1 surface delta is the
+`mcp-rewrite-foreign-owner` refusal class (T10b), implemented in
+`composeHardenPlan` and tested in `test/mcp-rewrite.test.mjs`.
 
 Q1–Q5 rulings from the v0.4 design memo (`docs/design/v0.4-design.md`)
 are recorded in the notes column below.

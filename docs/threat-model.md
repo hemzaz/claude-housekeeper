@@ -90,8 +90,8 @@ User explicitly cleans the stale lock via
 walks `planned → snapshot_taken → applied → {verified, rolled_back,
 aborted}`. Crash at any step is recoverable:
 
-- Crash before `applied`: `rollback --abort <id>` removes the unused
-  snapshot.
+- Crash before `applied`: `rollback --abort <id>` removes the
+  no-longer-needed snapshot.
 - Crash between `applied` and `verified`: `rollback <id>` restores
   from the snapshot.
 
@@ -558,13 +558,19 @@ different uid (e.g. a system binary, a shared library directory).
 Claude would then invoke a binary not under the user's exclusive
 control, which is a wider attack surface than before the rewrite.
 
-**Status:** mitigation deferred to v0.4.x. The refusal class
-`mcp-rewrite-foreign-owner` is **not yet implemented**. The v0.4.0
-release does not check the owner uid of `<new>`. This is recorded
-as a known residual per architect memo
-`docs/design/v0.4-architect-memo.md §3.4`. The T10b refusal class
-will be added in a v0.4.x patch once the uid-check helper is
-validated across macOS and Linux.
+**Status:** shipped in v0.4.1. The refusal class
+`mcp-rewrite-foreign-owner` is emitted by `composeHardenPlan` when
+`statSync(newPath).uid !== process.getuid()`. The uid check runs
+between the executable-bit check and the source-match check (per
+design §3.2 step 4). Closes the original v0.4.0 residual recorded
+in architect memo `docs/design/v0.4-architect-memo.md §3.4`.
+
+**Remaining residual:** a TOCTOU between the uid stat at plan
+composition and the final apply still permits a path swap by an
+attacker who already controls the user account — but such an
+attacker already owns the home (§2 trust boundary). The check
+defeats the simpler case of a user-writable directory holding a
+root-owned binary symlink chain.
 
 ### 10.3 Trust boundary unchanged
 

@@ -14,6 +14,47 @@ with two caveats documented in the design notes:
 
 _No changes yet._
 
+## [0.4.1] — 2026-05-19
+
+Backlog-drain patch on top of v0.4.0. No new features, no contract
+changes — closes two carry-overs identified at v0.4.0 GA shipping.
+
+### Added
+
+- `mcp-rewrite-foreign-owner` refusal class (`PreApplyRefusal`).
+  `harden --mcp-command-rewrite=<old>=<new>` now refuses when
+  `statSync(newPath).uid !== process.getuid()`, closing the v0.4.0
+  residual recorded in `docs/threat-model.md §10.2 T10b`. The refusal
+  taxonomy row at `docs/design/v0.4-design.md §5` already documented
+  the class; v0.4.1 ships the implementation plus a test in
+  `test/mcp-rewrite.test.mjs` (T10b) and updates the threat-model
+  status from "deferred" to "shipped".
+
+### Changed
+
+- `.github/workflows/release.yml` now passes `--prerelease` to
+  `gh release create` and `gh release edit` when the tag ref
+  contains `-` (matches `*-*`, e.g. `v0.4.0-beta.1`). Stable tags
+  (no `-`) are unaffected. Fixes a hygiene gap noted at v0.4.0 ship
+  time: `v0.4.0-beta.1` was published with `isPrerelease: false`
+  because the workflow did not differentiate.
+
+### Notes
+
+- v0.4.x backlog: PQ-1 (skill-index canonicalisation), PQ-2 (plugin
+  uninstall mutation), and PQ-3 (`MNT_LOCAL` correctness on
+  APFS-over-SMB) remain deferred. Each has an explicit re-open gate
+  recorded in `notes/TASKBOARD-v0.4.1.md`; PQ-2 specifically retains
+  its 30-day data-collection window before v0.4.2 design opens.
+
+### Migration
+
+No migration required. The only behaviour change is the new refusal:
+`harden --mcp-command-rewrite` invocations that previously silently
+accepted a foreign-owned target now exit 2 with the
+`mcp-rewrite-foreign-owner` message. Rerun with `chown $USER` applied
+to the target (or pass a path you own).
+
 ## [0.4.0] — 2026-05-19
 
 GA release of the v0.4 line. Promotes `0.4.0-beta.1` to stable after
