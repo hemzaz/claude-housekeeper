@@ -14,6 +14,24 @@ with two caveats documented in the design notes:
 
 _No changes yet._
 
+## [0.4.0] — 2026-05-19
+
+GA release of the v0.4 line. Promotes `0.4.0-beta.1` to stable after
+release-workflow CI passed (run `26086817652`) and a baseline soak
+against `~/.claude` cleared all stop conditions, including the T-703
+extensions exercising `learn` and `prune`.
+
+No new features or contract changes since `0.4.0-beta.1`. The only
+post-beta diff is the test fix in
+[#114](https://github.com/hemzaz/claude-housekeeper/pull/114) (T10/T11
+in `test/plugin-prune.test.mjs` now build a synthetic `--home` so the
+GitHub Actions runner — which has no `~/.claude` — exercises the
+v0.4 mutation-refusal path).
+
+See `[0.4.0-beta.1]` below for the full v0.4 changelog, and
+[`docs/migration-v0.3-to-v0.4.md`](docs/migration-v0.3-to-v0.4.md)
+for the upgrade guide.
+
 ## [0.4.0-beta.1] — 2026-05-18
 
 The v0.4 line. Introduces a full on-disk learning loop (`learn` and
